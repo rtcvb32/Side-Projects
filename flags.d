@@ -7,20 +7,28 @@
 
 ---
 	enum ETEST {none = 0, one = 1, two = 2, three = 3, four = 4}
-	handle_flags!(ETEST, int) ftest;
+	HandleFlags!(ETEST, int) ftest;
 
-	ftest.set_flag(ETEST.two);	//check flag setting
+	ftest.setFlag(ETEST.two);	//check flag setting
 	assert(ftest.state == 2);	//int and enum compares.
-	assert(ftest.state == ETEST.two);
+	assert(ftest.state == ftest.two);  //ftest.one and ftest.Enum.one accessible and shortcuts
 
-	ftest.set_flag(ETEST.four);	//set second flag
+	//shortcuts avaliable.
+	assert(ftest.one == ETEST.one && ftest.Enum.one == ETEST.one);
+
+	ftest.setFlag(ftest.four);	//set a second flag
 	assert(ftest.state == 6);	//2+4, no 6 enum.
 
 	//Flags can also encompass multiple bits. in this case all bits returned with an AND must match the flag.
-	ftest.state = 1;	
-	assert(!ftest.checkAll(one, two, three));  //can't be true, only 1 is there
-	ftest.state = 3;
-	assert(ftest.checkAll(one, two, three));   //must be true, since 1+2 includes 3.
+	//using checkAll, all of the flags MUST be true in order to be true.
+	with(ftest.Enum) {
+		ftest.state = 0;
+		ftest.setFlag(one);
+		assert(!ftest.checkAll(one, two, three));  //can't be true, only 1 is there
+
+		ftest.setFlag(two);
+		assert(ftest.checkAll(one, two, three));   //must be true, since 1+2 includes 3.
+	}
 ---
 
 */
@@ -34,6 +42,32 @@ import std.stdio : writeln;
 import std.conv;
 
 @trusted:
+
+unittest{
+	enum ETEST {none = 0, one = 1, two = 2, three = 3, four = 4}
+	HandleFlags!(ETEST, int) ftest;
+
+	ftest.setFlag(ETEST.two);	//check flag setting
+	assert(ftest.state == 2);	//int and enum compares.
+	assert(ftest.state == ftest.two);  //ftest.one and ftest.Enum.one accessible and shortcuts
+
+	//shortcuts avaliable.
+	assert(ftest.one == ETEST.one && ftest.Enum.one == ETEST.one);
+
+	ftest.setFlag(ftest.four);	//set a second flag
+	assert(ftest.state == 6);	//2+4, no 6 enum.
+
+	//Flags can also encompass multiple bits. in this case all bits returned with an AND must match the flag.
+	//using checkAll, all of the flags MUST be true in order to be true.
+	with(ftest.Enum) {
+		ftest.state = 0;
+		ftest.setFlag(one);
+		assert(!ftest.checkAll(one, two, three));  //can't be true, only 1 is there
+
+		ftest.setFlag(two);
+		assert(ftest.checkAll(one, two, three));   //must be true, since 1+2 includes 3.
+	}
+}
 
 class OverlapError : Error {
 	this(string msg = null) {
