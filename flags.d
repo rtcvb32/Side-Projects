@@ -291,6 +291,49 @@ if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
 		}
 		state &= mask;
 	}
+
+	//NOTE on binary flag operations. Checks regarding overlapping types not tested (as of yet)
+	///Binary operators for those that want to treat it like that. Single flags only
+	ref HandleFlags opOpBinary(string op)(E flag) @safe pure nothrow
+	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|"){
+		switch(op) {
+			case "+", "|": setFlag(flag); break;
+			case "-": clearFlag(flag); break;
+			case "^": flipFlag(flag); break;
+			case "&": keepOnly(flag); break;
+			default:
+		}
+
+		return this;
+	}
+
+	///Binary operators for use against another set of flags.
+	ref HandleFlags opOpBinary(string op)(ref const HandleFlags rhs) @safe pure nothrow
+	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|"){
+		switch(op) {
+			case "+", "|": state |= rhs.state; break;
+			case "-": state &= (~rhs.state); break;
+			case "^": state ^= rhs.state; break;
+			case "&": state &= rhs.state; break;
+			default:
+		}
+
+		return this;
+	}
+
+	///Binary operators for those that want to treat it like that. Single flags and whole Flag groups
+	HandleFlags opBinary(string op, T)(auto ref const T rhs) @trusted pure nothrow const
+	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|"
+			&& (is(T == HandleFlags) || is(T == E))) {
+		HandleFlags tmp = this; //safe copy/convert
+		tmp.opOpBinary!op(rhs);
+		return tmp;
+	}
+
+	///basic equality test, otherwise it keeps reverting to Enums during comparing
+	bool opEquals(ref const HandleFlags rhs)  @trusted pure nothrow const {
+		return state == rhs.state;
+	}
 }
 
 unittest {
@@ -413,5 +456,89 @@ unittest {
 		assert(is(Etest.Enum == ETEST));
 		
 //		ftest.flipFlag(one, three);	//intentionally to see the output message
+
+		//now for added binary operators. Tests try to incorporate both set and unset
+		//changes present
+		ftest = Etest(one, two);
+		Etest ftest2 = Etest(two, four);
+		Etest noChanges, noChangesHF, changes, changesHF;
+		Etest resultsNoChanges, resultsChanges;
+
+		////+, |
+		noChanges = ftest + two;	//no change
+		noChangesHF = ftest + ftest; //no change, all same flags
+		changes = ftest + four;		//add flag
+		changesHF = ftest + ftest2; //or/add all flags missing.
+		resultsNoChanges = Etest(one, two);
+		resultsChanges = Etest(one, two, four);
+
+		assert(noChanges == resultsNoChanges);
+		assert(noChangesHF == resultsNoChanges);
+		assert(changes == resultsChanges);
+		assert(changesHF == resultsChanges);
+
+		noChanges = ftest | two;	//no change
+		noChangesHF = ftest | ftest; //no change, all same flags
+		changes = ftest | four;		//add flag
+		changesHF = ftest | ftest2; //or/add all flags missing.
+//		resultsNoChanges = Etest(one, two);
+//		resultsChanges = Etest(one, two, four);
+
+		assert(noChanges == resultsNoChanges);
+		assert(noChangesHF == resultsNoChanges);
+		assert(changes == resultsChanges);
+		assert(changesHF == resultsChanges);
+
+		////-
+		ftest2 = Etest(four);
+		noChanges = ftest - four;
+		noChangesHF = ftest - ftest2;
+		ftest2 = Etest(two, four);
+		changes = ftest - two;
+		changesHF = ftest - ftest2;
+
+		resultsNoChanges = Etest(one, two);
+		resultsChanges = Etest(one);
+
+		assert(noChanges == resultsNoChanges);
+		assert(noChangesHF == resultsNoChanges);
+		assert(changes == resultsChanges);
+		assert(changesHF == resultsChanges);
+
+
+		////&
+		ftest2 = Etest(one, two, four);
+//		noChanges = ftest & four;	//only one flag, so we can't keep both flags.
+		noChangesHF = ftest & ftest2;
+		ftest2 = Etest(two, four);	//overlapping 2
+
+		changes = ftest & two;		//keep only 2
+		changesHF = ftest & ftest2;
+
+		resultsNoChanges = Etest(one, two);
+		resultsChanges = Etest(two);
+
+//		assert(noChanges == resultsNoChanges);
+		assert(noChangesHF == resultsNoChanges);
+		assert(changes == resultsChanges);
+		assert(changesHF == resultsChanges);
+
+		////^
+		ftest = Etest(one, two);
+		ftest2 = Etest(two, four); //1 overlapping
+		changes = ftest ^ two;		//remove flag
+		changesHF = ftest ^ ftest2; //swap 2
+
+		resultsChanges = Etest(one);
+		assert(changes == resultsChanges);
+		resultsChanges = Etest(one, four);
+		assert(changesHF == resultsChanges);
+
+		//second xor check for changes
+		changes = ftest ^ four;		//remove flag
+		resultsChanges = Etest(one, two, four);
+		assert(changes == resultsChanges);
+
+		//opOpAssign already used in all binary operations, add tests later to confirm it.
 	}
 }
