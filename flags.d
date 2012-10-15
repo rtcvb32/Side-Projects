@@ -1,7 +1,9 @@
 /**
 	Author: Era Scarecrow <rtcvb32@yahoo.com>
+	Date: 14 April 2012
+	License: GPLv3
 	
-	Basic handling of flags and their types. Since you can't go int to ENUM, this
+	Description: Basic handling of flags and their types. Since you can't go int to ENUM, this
 	structure will set, and test flags appropriately. As there's only one state (integral)
 	you can (hopefully) forcibly cast an int into HandleFlags so long as the size is the same.
 
@@ -11,12 +13,12 @@
 
 	ftest.setFlag(ETEST.two);	//check flag setting
 	assert(ftest.state == 2);	//int and enum compares.
-	assert(ftest.state == ftest.two);  //ftest.one and ftest.Enum.one accessible and shortcuts
+	assert(ftest.state == ftest.Enum.two);  //ftest.Enum.one accessible
 
 	//shortcuts avaliable.
-	assert(ftest.one == ETEST.one && ftest.Enum.one == ETEST.one);
+	assert(ftest.Enum.one == ETEST.one);
 
-	ftest.setFlag(ftest.four);	//set a second flag
+	ftest.setFlag(ETEST.four);	//set a second flag
 	assert(ftest.state == 6);	//2+4, no 6 enum.
 
 	//Flags can also encompass multiple bits. in this case all bits returned with an AND must match the flag.
@@ -29,8 +31,28 @@
 		ftest.setFlag(two);
 		assert(ftest.checkAll(one, two, three));   //must be true, since 1+2 includes 3.
 	}
----
 
+	//binary operations possible and even tests.
+	with(ftest.Enum) {
+		ftest.state = 0;
+		assert(!ftest);
+		//opOpBinary not workable, so no += or similar
+		ftest = ftest | two; 
+		assert(ftest && ftest.state == 2);
+
+		ftest = ftest ^ [one, two];
+		assert(ftest && ftest.state == 1);
+
+		assert(ftest & one);
+		assert(!(ftest & two));
+
+		assert(!(ftest - one));
+
+		// | and + are the same, so 1 + 1 = 1. (Setting the flag with + doesn't equal arithmetic)
+		ftest = ftest + one;
+		assert(ftest && ftest.state == 1);
+	}
+---
 */
 module smartmerged.flags;
 
@@ -43,18 +65,19 @@ import std.conv;
 
 @trusted:
 
-unittest{
+//duplicate of above documentation, for correctness.
+unittest {
 	enum ETEST {none = 0, one = 1, two = 2, three = 3, four = 4}
 	HandleFlags!(ETEST, int) ftest;
 
 	ftest.setFlag(ETEST.two);	//check flag setting
 	assert(ftest.state == 2);	//int and enum compares.
-	assert(ftest.state == ftest.two);  //ftest.one and ftest.Enum.one accessible and shortcuts
+	assert(ftest.state == ftest.Enum.two);  //ftest.Enum.one accessible
 
 	//shortcuts avaliable.
-	assert(ftest.one == ETEST.one && ftest.Enum.one == ETEST.one);
+	assert(ftest.Enum.one == ETEST.one);
 
-	ftest.setFlag(ftest.four);	//set a second flag
+	ftest.setFlag(ETEST.four);	//set a second flag
 	assert(ftest.state == 6);	//2+4, no 6 enum.
 
 	//Flags can also encompass multiple bits. in this case all bits returned with an AND must match the flag.
@@ -67,8 +90,30 @@ unittest{
 		ftest.setFlag(two);
 		assert(ftest.checkAll(one, two, three));   //must be true, since 1+2 includes 3.
 	}
+
+	//binary operations possible and even tests.
+	with(ftest.Enum) {
+		ftest.state = 0;
+		assert(!ftest);
+		//opOpBinary not workable, so no += or similar
+		ftest = ftest | two; 
+		assert(ftest && ftest.state == 2);
+
+		ftest = ftest ^ [one, two];
+		assert(ftest && ftest.state == 1);
+
+		assert(ftest & one);
+		assert(!(ftest & two));
+
+		assert(!(ftest - one));
+
+		// | and + are the same, so 1 + 1 = 1. (Setting the flag with + doesn't equal arithmetic)
+		ftest = ftest + one;
+		assert(ftest && ftest.state == 1);
+	}
 }
 
+///
 class OverlapError : Error {
 	this(string msg = null) {
 		if (msg !is null)
@@ -81,11 +126,10 @@ class OverlapError : Error {
 /**
  * Returns any potential pairs of overlapping enum flags.
  */
-auto getOverlaps(E...)(E flags)
-if (is(typeof(flags[0]) == enum)) {
-	alias typeof(flags[0]) F;
-	F[2][] pairs;
-	static if (flags.length > 1) {
+auto getOverlaps(E)(const E[] flags ...)
+if (is(E == enum)) {
+	E[2][] pairs;
+	if (flags.length > 1) {
 		foreach(i, l; flags) {
 			foreach(r; flags[i+1 .. $]) {
 				if (l & r) {
@@ -119,17 +163,30 @@ unittest {
 ///
 struct HandleFlags(E, I)
 if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
-	I state;	///Holds state.
-	alias E Enum;
-	alias Enum this;
-	
-	enum containsOverlaps = enumBitsOverlap!(E);
-	enum overlapsString = to!string(containsOverlaps);
-	
-	this(E[] flag...) {
-		setFlag(flag);
+	I state;		///Holds state.
+	alias E Enum;	///
+	alias convToBool this;
+
+	/**simple bool conversion, prevents treating the whole thing as an numeric type
+	   and opOpBinary operations won't have unwanted effects.*/
+	bool convToBool() @safe pure nothrow const {
+		return state != 0;
 	}
-	 
+	
+	enum containsOverlaps = enumBitsOverlap!(E);		///
+	enum overlapsString = to!string(containsOverlaps);	///
+	
+	///Start with flags set
+	this(E[] flags ...) {
+		setFlag(flags);
+	}
+	
+	///Convert numeric's value into a flag
+	this(I state) {
+		this.state = state;
+	}
+	
+
 	/**
 	 * checks to see if two flags may interfere with eachother, specifically clearing or xoring.
 	 * This can cause problems where you may get a completely unexpected or invalid flag combination,
@@ -171,7 +228,7 @@ if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
 	---
 	* In this case Both is only true if A & B are on. Forcing a checkAll for multiple flags or specific states 
 	*/
-	static bool canOverlap(E[] flag...) @safe pure nothrow {
+	static bool canOverlap(const E[] flag...) @safe pure nothrow {
 		for(int i; i < (flag.length-1); i++)
 			foreach(fl; flag[i+1 .. $]) {
 				if (flag[i] & fl)
@@ -181,19 +238,19 @@ if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
 		return false;
 	}
 
-	///checks if all bits in 'flag' are present.
+	///checks if all bits in one enum flag are present.
 	bool isFlagSet(E flag) const @safe pure nothrow {
 		return (state & flag) == flag;
 	}
 
 	///Returns true/false if any specified flags has been set.
-	bool check(E[] flag ...) const @safe pure nothrow
+	bool check(const E[] flags ...) const @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");	//logically not an error, but we aren't checking anything otherwise.
+		assert(flags.length, "Empty flags list");	//logically not an error, but we aren't checking anything otherwise.
 		//overlap not an issue
 	}
 	body {
-		foreach(fl; flag) {
+		foreach(fl; flags) {
 			if (isFlagSet(fl))
 				return true;
 		}
@@ -201,13 +258,13 @@ if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
 	}
 
 	///Returns true if (and only if) all supplied flags are true/on.
-	bool checkAll(E[] flag ...) const @safe pure nothrow
+	bool checkAll(const E[] flags ...) const @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");
+		assert(flags.length, "Empty flags list");
 		//overlap not an issue
 	}
 	body {
-		foreach(fl; flag) {
+		foreach(fl; flags) {
 			if (!isFlagSet(fl))
 				return false;
 		}
@@ -216,13 +273,13 @@ if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
 
 	/** Checks if a flag has been set, returning the first matching flag,
 		otherwise returning the Else flag.*/
-	E checkElse(E Else, E[] flag...) const @safe pure nothrow
+	E checkElse(E Else, const E[] flags ...) const @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");
+		assert(flags.length, "Empty flags list");
 		//overlap not an issue
 	}
 	body {
-		foreach(fl; flag) {
+		foreach(fl; flags) {
 			if (isFlagSet(fl))
 				return fl;
 		}
@@ -231,108 +288,109 @@ if (is(E == enum) && isIntegral!(I) && isFloatingPoint!(I) == false) {
 	}
 
 	///Sets specific flag(s) on
-	void setFlag(E[] flag...) @safe pure nothrow
+	void setFlag(const E[] flags ...) @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");
+		assert(flags.length, "Empty flags list");
 		//overlap not an issue
 	}
 	body {
-		foreach(fl; flag) {
+		foreach(fl; flags) {
 			state |= fl;
 		}
 	}
 
 	///turns listed flags off.
-	void clearFlag(E[] flag...) @safe pure nothrow
+	void clearFlag(const E[] flags ...) @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");
+		assert(flags.length, "Empty flags list");
 		static if (containsOverlaps) {
-			if (canOverlap(flag)) {
+			if (canOverlap(flags)) {
 				throw new OverlapError(overlapsString);
 			}
 		}
 	}
 	body {
-		foreach(fl; flag) {
+		foreach(fl; flags) {
 			state &= (~fl);
 		}
 	}
 
 	///reverses the state of a specific flag.
-	void flipFlag(E[] flag...) @safe pure nothrow
+	void flipFlag(const E[] flags ...) @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");
+		assert(flags.length, "Empty flags list");
 		static if (containsOverlaps) {
-			if (canOverlap(flag))
+			if (canOverlap(flags))
 				throw new OverlapError(overlapsString);
 		}
 
 	}
 	body {
-		foreach(fl; flag) {
+		foreach(fl; flags) {
 			state ^= fl;
 		}
 	}
 
 	///keeps (ands) only specified flags
-	void keepOnly(E[] flag...) @safe pure nothrow
+	void keepOnly(const E[] flags ...) @safe pure nothrow
 	in {
-		assert(flag.length, "Empty flags list");
+		assert(flags.length, "Empty flags list");
 		static if (containsOverlaps) {
-			if (canOverlap(flag))
+			if (canOverlap(flags))
 				throw new OverlapError(overlapsString);
 		}
-
 	}
 	body {
 		I mask;
-		foreach(fl; flag){
+		foreach(fl; flags){
 			mask |= fl;
 		}
 		state &= mask;
 	}
 
 	//NOTE on binary flag operations. Checks regarding overlapping types not tested (as of yet)
-	///Binary operators for those that want to treat it like that. Single flags only
-	ref HandleFlags opOpBinary(string op)(E flag) @safe pure nothrow
-	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|"){
+
+	///Binary operators for those that want to treat it like that. 
+	HandleFlags opBinary(string op)(HandleFlags rhs) @trusted pure nothrow const {
+		HandleFlags tmp = this;
 		switch(op) {
-			case "+", "|": setFlag(flag); break;
-			case "-": clearFlag(flag); break;
-			case "^": flipFlag(flag); break;
-			case "&": keepOnly(flag); break;
+			case "+", "|": tmp.state |= rhs.state; break;
+			case "-": tmp.state &= (~rhs.state); break;
+			case "^": tmp.state ^= rhs.state; break;
+			case "&": tmp.state &= rhs.state; break;
 			default:
 		}
 
-		return this;
-	}
-
-	///Binary operators for use against another set of flags.
-	ref HandleFlags opOpBinary(string op)(ref const HandleFlags rhs) @safe pure nothrow
-	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|"){
-		switch(op) {
-			case "+", "|": state |= rhs.state; break;
-			case "-": state &= (~rhs.state); break;
-			case "^": state ^= rhs.state; break;
-			case "&": state &= rhs.state; break;
-			default:
-		}
-
-		return this;
-	}
-
-	///Binary operators for those that want to treat it like that. Single flags and whole Flag groups
-	HandleFlags opBinary(string op, T)(auto ref const T rhs) @trusted pure nothrow const
-	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|"
-			&& (is(T == HandleFlags) || is(T == E))) {
-		HandleFlags tmp = this; //safe copy/convert
-		tmp.opOpBinary!op(rhs);
 		return tmp;
 	}
 
-	///basic equality test, otherwise it keeps reverting to Enums during comparing
-	bool opEquals(ref const HandleFlags rhs)  @trusted pure nothrow const {
-		return state == rhs.state;
+/+
+	// not currently working without explicit calling.
+	ref HandleFlags opOpBinary(string op)(const E[] rhs ...) @trusted pure nothrow
+	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|") {
+		switch(op) {
+			case "+", "|": setFlag(rhs); break;
+			case "-": clearFlag(rhs); break;
+			case "^": flipFlag(rhs); break;
+			case "&": keepOnly(rhs); break;
+			default:
+		}
+		return this;
+	}
++/
+
+	///Binary operators for those that want to treat it like that. Single flags and whole Flag groups
+	HandleFlags opBinary(string op)(const E[] rhs ...) @trusted pure nothrow const
+	if (op == "+" || op == "-" || op == "^" || op == "&" || op == "|") {
+		HandleFlags tmp = this;
+		switch(op) {
+			case "+", "|": tmp.setFlag(rhs); break;
+			case "-": tmp.clearFlag(rhs); break;
+			case "^": tmp.flipFlag(rhs); break;
+			case "&": tmp.keepOnly(rhs); break;
+			default:
+		}
+		return tmp;
 	}
 }
 
@@ -441,18 +499,13 @@ unittest {
 		assertNotThrown!()(ftest.clearFlag(one, two), "Should not throw");
 		assertNotThrown!()(ftest.keepOnly(one, two), "Should not throw");
 	
-		//test alias this for enums
-		assert(ftest.none == ETEST.none);
-		assert(ftest.one == ETEST.one);
-		assert(ftest.two == ETEST.two);
-		assert(ftest.three == ETEST.three);
-		assert(ftest.four == ETEST.four);
-		
-		assert(HandleFlags!(ETEST, int).four == ETEST.four);
+		//removed: alias Enum this. Was replaced by alias convToBool this.
+
+		assert(HandleFlags!(ETEST, int).Enum.four == ETEST.four);
 		
 		alias HandleFlags!(ETEST, int) Etest;	//as a new aliased type
 		
-		assert(Etest.four == ETEST.four);
+		assert(Etest.Enum.four == ETEST.four);
 		assert(is(Etest.Enum == ETEST));
 		
 //		ftest.flipFlag(one, three);	//intentionally to see the output message
@@ -464,7 +517,7 @@ unittest {
 		Etest noChanges, noChangesHF, changes, changesHF;
 		Etest resultsNoChanges, resultsChanges;
 
-		////+, |
+			////+, |
 		noChanges = ftest + two;	//no change
 		noChangesHF = ftest + ftest; //no change, all same flags
 		changes = ftest + four;		//add flag
@@ -476,6 +529,12 @@ unittest {
 		assert(noChangesHF == resultsNoChanges);
 		assert(changes == resultsChanges);
 		assert(changesHF == resultsChanges);
+
+		////array version, to be finished later.
+		noChanges = ftest + [two];	//no change
+		changes = ftest + [two, four];		//add flag
+		assert(noChanges == resultsNoChanges);
+		assert(changes == resultsChanges);
 
 		noChanges = ftest | two;	//no change
 		noChangesHF = ftest | ftest; //no change, all same flags
@@ -489,7 +548,14 @@ unittest {
 		assert(changes == resultsChanges);
 		assert(changesHF == resultsChanges);
 
-		////-
+		//array
+		noChanges = ftest; changes = ftest;
+		noChanges = ftest | [two];			//no change
+		changes = ftest | [two, four];		//add flag
+		assert(noChanges == resultsNoChanges);
+		assert(changes == resultsChanges);
+
+			////-
 		ftest2 = Etest(four);
 		noChanges = ftest - four;
 		noChangesHF = ftest - ftest2;
@@ -505,8 +571,14 @@ unittest {
 		assert(changes == resultsChanges);
 		assert(changesHF == resultsChanges);
 
+		//array
+		noChanges = ftest; changes = ftest;
+		noChanges = ftest - [four];			//no change
+		changes = ftest - [two, four];		//add flag
+		assert(noChanges == resultsNoChanges);
+		assert(changes == resultsChanges);
 
-		////&
+			////&
 		ftest2 = Etest(one, two, four);
 //		noChanges = ftest & four;	//only one flag, so we can't keep both flags.
 		noChangesHF = ftest & ftest2;
@@ -522,8 +594,15 @@ unittest {
 		assert(noChangesHF == resultsNoChanges);
 		assert(changes == resultsChanges);
 		assert(changesHF == resultsChanges);
+		
+		//array
+		noChanges = ftest; changes = ftest;
+		noChanges = ftest & [one, two];			//no change
+		changes = ftest & [two];		//add flag
+		assert(noChanges == resultsNoChanges);
+		assert(changes == resultsChanges);
 
-		////^
+			////^
 		ftest = Etest(one, two);
 		ftest2 = Etest(two, four); //1 overlapping
 		changes = ftest ^ two;		//remove flag
@@ -539,6 +618,33 @@ unittest {
 		resultsChanges = Etest(one, two, four);
 		assert(changes == resultsChanges);
 
-		//opOpAssign already used in all binary operations, add tests later to confirm it.
+		//array
+		changes = ftest ^ [two, four];		//add flag
+		resultsChanges = Etest(one, four);
+		assert(changes == resultsChanges);
+
+		//convert to bool tests
+		assert(ftest);
+		assert(ftest & two);
+		assert(!(ftest & four));
+
+		ftest2 = Etest();
+		assert(!ftest2);
+		assert(!(ftest2 & ftest));
+		assert(ftest2 + ftest);
+
+		/* opOpBinary - not scalar problems. No slices probably. 
+		changes = ftest; noChanges = ftest;
+		noChanges += two;	//no change
+		changes += four;		//add flag
+		assert(noChanges == resultsNoChanges);
+		assert(changes == resultsChanges);
+		changes = ftest; noChanges = ftest;
+		noChanges += [two];	//no change
+		changes += [two, four];		//add flag
+		assert(noChanges == resultsNoChanges);
+		assert(changes == resultsChanges);
+		*/
+
 	}
 }
