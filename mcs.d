@@ -19,6 +19,9 @@ Description: While watching a lecture with Richard Buckland regarding sorting,
              In C++ this is not possible as overloads for each compare means all
             sorting is done via less-than compares. With D on the other hand, a
             result of it's relationship is preserved and can be used.
+    
+    Version notes:
+    1/27/13 V0.2 - In transition for making notes of equality in compares.
 */
 import std.stdio;
 import std.algorithm;
@@ -45,14 +48,29 @@ enum Reorder {
     less than left. If we keep track of if the first compare was equal, then with only the
     two compares we know the answer is rlm, rather than needing the third compare.
     
-    Now if the overhead slows it down or helps will only be told during profiling. */
+    Now if the overhead slows it down or helps will only be told during profiling. 
+    
+    Combinations with equals noted. 1 & 2 refer to left/middle/right
+    left & right checks unneeded after it's been re-ordered. This is for masking*/
+    mask = 0x0f,        //for normal compares during reordering
+    lm_1 = lm | 0x10, 
+    lmr_1 = lmr | 0x10, lmr_2 = lmr | 0x20, lmr_3 = lmr | 0x30,
+
+    lrm_1 = lrm | 0x10, lrm_2 = lrm | 0x20,
+    mlr_1 = mlr | 0x10, mlr_2 = mlr | 0x20,
+    mrl_1 = mrl | 0x10, mrl_2 = mrl | 0x20,
+    rlm_1 = rlm | 0x10, rlm_2 = rlm | 0x20,
+    rml_1 = rml | 0x10, rml_2 = rml | 0x20,
 }
 
 enum RangeState {
     hasValues = 0,  //Range's data is for values
     hasSubRanges,   //Range's data points to other ranges.
     thirdUnordered, //no need for second compare to know we use the middle value
-    allUnordered,   //for LMR
+    allUnordered,
+    lmEqual = 0x10,
+    mrEqual = 0x20,
+    allEqual = 0x30,
 }
 
 ///
@@ -482,10 +500,14 @@ in {
 body { with(Reorder) {
     if (offsets[1] == Reorder.empty)
         return Reorder.l;
+    
+    int[3] cmpResults;
 
     T* left = &elems[offsets[0]];
     T* middle = &elems[offsets[1]];
-    Reorder state = (*left) > (*middle) ? ml: lm;
+    cmpResults[0] = (*left).opCmp(*middle);
+    
+    Reorder state = (cmpResults[0] > 0) ? ml: lm;
 
     if (offsets[2] != Reorder.empty) {
         //right only applicable on 3's
@@ -493,9 +515,11 @@ body { with(Reorder) {
 
         if (state == lm) {
             //lmr, //lrm, //mrl,
-            if ((*middle) > (*right)) {
-            //lrm, //mrl,
-                if ((*left) > (*right))
+            cmpResults[1] = (*middle).opCmp(*right);
+            if (cmpResults[1] > 0) {
+                //lrm, //mrl,
+                cmpResults[2] = (*left).opCmp(*right);
+                if (cmpResults[2] > 0)
                     state = mrl;
                 else
                     state = lrm;
@@ -521,18 +545,22 @@ in {
 }
 body { with(Reorder) {
     Reorder state = ml;
-    
+    int[3] cmpResults = [1, 0, 0]; //0 (1+2) already false
+
     if (offsets[2] == Reorder.empty)
         return Reorder.ml;
     
     T* left = &elems[offsets[0]];
     T* middle = &elems[offsets[1]];
     T* right = &elems[offsets[2]];
+    
+    cmpResults[2] = (*left).opCmp(*right);
 
     //mlr, //rml //rlm,
-    if ((*left) > (*right)) {
-    //rml //rlm,
-        if ((*right) < (*middle))
+    if (cmpResults[2] > 0) {
+        //rml //rlm,
+        cmpResults[1] = (*middle).opCmp(*right);
+        if (cmpResults[1] > 0)
             state = rml;
         else
             state = rlm;
@@ -568,7 +596,7 @@ in {
 body { with(Reorder) {
     //check for no changes needed
     enum { left = 0, middle = 1, right = 2 }
-    final switch (order) {
+    switch (order & Reorder.mask) {
         case rlm:   //becomes mlr, then lmr
             swap(offsets[left], offsets[right]);
 
@@ -589,6 +617,9 @@ body { with(Reorder) {
         
         case empty, l, lm, lmr:
             break;
+            
+        default:
+            assert(0, text("Unhandled case:", order, " (", (order&Reorder.mask), ")"));
     }
 }}
 
