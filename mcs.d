@@ -22,6 +22,9 @@ Description: While watching a lecture with Richard Buckland regarding sorting,
     
     Version notes:
     1/27/13 V0.2 - In transition for making notes of equality in compares.
+    1/27/13 V0.3 - Transition complete, only need to add a few checks for popFront
+                 to complete our equality assumption. determineOrder may be redone
+                 to use flags instead of manual setting.
 */
 import std.stdio;
 import std.algorithm;
@@ -52,25 +55,28 @@ enum Reorder {
     
     Combinations with equals noted. 1 & 2 refer to left/middle/right
     left & right checks unneeded after it's been re-ordered. This is for masking*/
-    mask = 0x0f,        //for normal compares during reordering
-    lm_1 = lm | 0x10, 
-    lmr_1 = lmr | 0x10, lmr_2 = lmr | 0x20, lmr_3 = lmr | 0x30,
+    mask = 0x0f,            //for normal compares during reordering
+    eq1 = 0x10, eq2 = 0x20, //flags for first two equal, second two equal.
+    lm_1 = lm | eq1, 
+    lmr_1 = lmr | eq1, lmr_2 = lmr | eq2, lmr_3 = lmr | eq1 | eq2,
 
-    lrm_1 = lrm | 0x10, lrm_2 = lrm | 0x20,
-    mlr_1 = mlr | 0x10, mlr_2 = mlr | 0x20,
-    mrl_1 = mrl | 0x10, mrl_2 = mrl | 0x20,
-    rlm_1 = rlm | 0x10, rlm_2 = rlm | 0x20,
-    rml_1 = rml | 0x10, rml_2 = rml | 0x20,
+    lrm_1 = lrm | eq1, lrm_2 = lrm | eq2,
+    mlr_1 = mlr | eq1, mlr_2 = mlr | eq2,
+    mrl_1 = mrl | eq1, mrl_2 = mrl | eq2,
+    rlm_1 = rlm | eq1, rlm_2 = rlm | eq2,
+    rml_1 = rml | eq1, rml_2 = rml | eq2,
 }
 
 enum RangeState {
-    hasValues = 0,  //Range's data is for values
-    hasSubRanges,   //Range's data points to other ranges.
-    thirdUnordered, //no need for second compare to know we use the middle value
-    allUnordered,
-    lmEqual = 0x10,
-    mrEqual = 0x20,
-    allEqual = 0x30,
+    hasValues = 0,      //Range's data is for values
+    hasSubRanges,       //Range's data points to other ranges.
+    thirdUnordered = 2, //no need for second compare to know we use the middle value
+    thirdUnordered_lmEqual = thirdUnordered | Reorder.eq1, //second and third in this case
+    allUnordered   = 4,
+    lmEqual  = Reorder.eq1,
+    mrEqual  = Reorder.eq2,
+    allEqual = Reorder.eq1 | Reorder.eq2
+
 }
 
 ///
@@ -502,35 +508,64 @@ body { with(Reorder) {
         return Reorder.l;
     
     int[3] cmpResults;
+    Reorder state;
 
     T* left = &elems[offsets[0]];
     T* middle = &elems[offsets[1]];
     cmpResults[0] = (*left).opCmp(*middle);
     
-    Reorder state = (cmpResults[0] > 0) ? ml: lm;
 
     if (offsets[2] != Reorder.empty) {
         //right only applicable on 3's
         T* right = &elems[offsets[2]];
 
-        if (state == lm) {
+        if (cmpResults[0] <= 0) {
             //lmr, //lrm, //mrl,
             cmpResults[1] = (*middle).opCmp(*right);
             if (cmpResults[1] > 0) {
                 //lrm, //mrl,
-                cmpResults[2] = (*left).opCmp(*right);
-                if (cmpResults[2] > 0)
-                    state = mrl;
-                else
-                    state = lrm;
+                if (cmpResults[0] == 0) {
+                    //l == m & r < m, meaning right shifts to the beginning.
+                    state = mrl_2;
+                    debug { assert ((*right) <= (*left));}
+                } else {
+                    //lrm, //mrl,
+                    cmpResults[2] = (*left).opCmp(*right);
+                    if (cmpResults[2] > 0)
+                        state = mrl;
+                    else {
+                        // l < m && m > r && l == r
+                        if (cmpResults[2] == 0)
+                            state = lrm_1;
+                        //no assumptions possible.
+                        else
+                            state = lrm;
+                    }
+                }
             } else {
                 debug {
                     assert((*right) >= (*left));    //assure it's correct.
                 }
-                state = lmr;
+
+                if ((cmpResults[0] == 0) && (cmpResults[1] == 0)) {
+                    state = lmr_3;
+                    debug { assert((*left) == (*right)); }
+                } else if ((cmpResults[0] == 0))
+                    state = lmr_1;
+                else if ((cmpResults[1] == 0))
+                    state = lmr_2;
+                else
+                    state = lmr;
             }
         } else    //since it's separated out..
             state = determineReorder!(T, true)(elems, offsets);
+    } else {
+        if (cmpResults[0] == 0) //if equal, note it.
+            state = lm_1;
+        else if (cmpResults[0] > 0)
+            state = ml;
+        else 
+            state = lm;
     }
 
     return state; //already compared so it's 2 elements
@@ -556,14 +591,27 @@ body { with(Reorder) {
     
     cmpResults[2] = (*left).opCmp(*right);
 
+    //(l > m) (before this) && l == r means mrl
+    if (cmpResults[2] == 0) {
+        state = mlr_2;
     //mlr, //rml //rlm,
-    if (cmpResults[2] > 0) {
+    } else if (cmpResults[2] > 0) {
         //rml //rlm,
         cmpResults[1] = (*middle).opCmp(*right);
         if (cmpResults[1] > 0)
             state = rml;
-        else
-            state = rlm;
+        else {
+            //l > m && l == r, meaning m < l&r
+            if (cmpResults[2] == 0) {
+                state = mlr_2;
+                debug { assert((*middle) < (*right)); }
+                
+            //l > m && m == r
+            } else if (cmpResults[1] == 0)
+                state = rlm_1;
+            else
+                state = rlm;
+        }
     } else {
         //mlr,
         debug {
@@ -638,7 +686,7 @@ unittest {
         Int.count = 0;
         int[3] ordering = [0,1,2];
         Reorder order = determineReorder(pm[], ordering);
-        debug { write(pm, "\t", order, "\t - "); }
+        Int.save();
         Int[] tmp = pm[0 .. $];
         orderSort(order, ordering[0 .. $]);
         
@@ -651,17 +699,28 @@ unittest {
         
         Reorder order2 = determineReorder(pm[], ordering);
         
-        debug { writeln(ordering, " - ", order2 ," compares = ", Int.count); }
+        //results skewed in debug mode proving normal assumptions based on compares.
+        write(pm, "\t", order, "\t - ");
+        writeln(ordering, " - ", order2 ," \tcompares = ", Int.saved);
 
         Int l = pm2[0];
         Int m = pm2[1];
         Int r = pm2[2];
         
-        assert(order2 == Reorder.lmr);                          //what our reorder says
+        assert((order2 & Reorder.mask) == Reorder.lmr);         //what our reorder says
         assert(l <= m, "Threeway sort/swap failed! l > m");     //ensure integrity of compares vs reorder output
         assert(m <= r, "Threeway sort/swap failed! m > r");
         assert(l <= r, "Threeway sort/swap failed! l > r");
 
+        //check 'equals' matches
+        if ((order & Reorder.eq1)) {
+            //l & m equal
+            assert(l == m);
+        }
+        if ((order & Reorder.eq2)) {
+            assert(m == r);
+        }
+        
         /*
         //check stability of sort when identical values are present.
         if (l == m)
@@ -699,7 +758,8 @@ unittest {
     ordering = [0, 1, empty];
 
     order = determineReorder(perm[], ordering);
-    assert(order == Reorder.lm, "2 part ordering (same) failed answer");
+    assert((order == Reorder.lm_1) && ((order & Reorder.mask) == Reorder.lm),
+            "2 part ordering (same) failed answer");
     orderSort(order, ordering[0 .. $]);
     assert(ordering == [0, 1, empty], "identical values ordering failed stability test");
 }
@@ -742,6 +802,7 @@ unittest {
                 combinations++;
 
                 //only print larger compares, to find edge cases to improve on.
+                //results skewed in debug mode.
                 if (maxCount < Int.count)
                     writeln(toSort, "-", sorted ," compares: ", lazyCnt, "/", Int.count,
                             //max used since the if check can be removed.
@@ -762,6 +823,34 @@ unittest {
 }
 /* - currently
 $ ./mcs.exe
+[0, 0, 0]       lmr_3    - [0, 1, 2] - lmr_3    compares = 2
+[0, 0, 1]       lmr_1    - [0, 1, 2] - lmr_1    compares = 2
+[0, 0, 2]       lmr_1    - [0, 1, 2] - lmr_1    compares = 2
+[0, 1, 0]       lrm_1    - [0, 2, 1] - lmr_1    compares = 3
+[0, 1, 1]       lmr_2    - [0, 1, 2] - lmr_2    compares = 2
+[0, 1, 2]       lmr      - [0, 1, 2] - lmr      compares = 2
+[0, 2, 0]       lrm_1    - [0, 2, 1] - lmr_1    compares = 3
+[0, 2, 1]       lrm      - [0, 2, 1] - lmr      compares = 3
+[0, 2, 2]       lmr_2    - [0, 1, 2] - lmr_2    compares = 2
+[1, 0, 0]       rlm_1    - [1, 2, 0] - lmr_1    compares = 3
+[1, 0, 1]       mlr_2    - [1, 0, 2] - lmr_2    compares = 2
+[1, 0, 2]       mlr      - [1, 0, 2] - lmr      compares = 2
+[1, 1, 0]       mrl_2    - [2, 0, 1] - lmr_2    compares = 2
+[1, 1, 1]       lmr_3    - [0, 1, 2] - lmr_3    compares = 2
+[1, 1, 2]       lmr_1    - [0, 1, 2] - lmr_1    compares = 2
+[1, 2, 0]       mrl      - [2, 0, 1] - lmr      compares = 3
+[1, 2, 1]       lrm_1    - [0, 2, 1] - lmr_1    compares = 3
+[1, 2, 2]       lmr_2    - [0, 1, 2] - lmr_2    compares = 2
+[2, 0, 0]       rlm_1    - [1, 2, 0] - lmr_1    compares = 3
+[2, 0, 1]       rlm      - [1, 2, 0] - lmr      compares = 3
+[2, 0, 2]       mlr_2    - [1, 0, 2] - lmr_2    compares = 2
+[2, 1, 0]       rml      - [2, 1, 0] - lmr      compares = 3
+[2, 1, 1]       rlm_1    - [1, 2, 0] - lmr_1    compares = 3
+[2, 1, 2]       mlr_2    - [1, 0, 2] - lmr_2    compares = 2
+[2, 2, 0]       mrl_2    - [2, 0, 1] - lmr_2    compares = 2
+[2, 2, 1]       mrl_2    - [2, 0, 1] - lmr_2    compares = 2
+[2, 2, 2]       lmr_3    - [0, 1, 2] - lmr_3    compares = 2
+Average Compares: 2.37
 [0, 0, 0, 0, 0, 0, 0, 0, 0]-[0, 0, 0, 0, 0, 0, 0, 0, 0] compares:  8/12 : 12
 [0, 0, 0, 0, 0, 0, 0, 1, 0]-[0, 0, 0, 0, 0, 0, 0, 0, 1] compares:  9/13 : 13
 [0, 0, 0, 0, 0, 1, 0, 0, 0]-[0, 0, 0, 0, 0, 0, 0, 0, 1] compares:  8/14 : 14
@@ -775,8 +864,8 @@ $ ./mcs.exe
 [0, 1, 3, 0, 3, 2, 0, 4, 2]-[0, 0, 0, 1, 2, 2, 3, 3, 4] compares: 10/22 : 22
 [0, 1, 3, 1, 4, 2, 0, 3, 2]-[0, 0, 1, 1, 2, 2, 3, 3, 4] compares: 11/23 : 23
 [0, 3, 1, 1, 4, 2, 0, 3, 2]-[0, 0, 1, 1, 2, 2, 3, 3, 4] compares: 12/24 : 24
-Lazy Average: 10.4107
-     Average: 18.7811
+Lazy Average: 10.2106
+     Average: 18.5173
 */
 
 //an int, but retains counts for sorting comparison.
