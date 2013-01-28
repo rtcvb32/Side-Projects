@@ -25,6 +25,8 @@ Description: While watching a lecture with Richard Buckland regarding sorting,
     1/27/13 V0.3 - Transition complete, only need to add a few checks for popFront
                  to complete our equality assumption. determineOrder may be redone
                  to use flags instead of manual setting.
+    1/28/13 V0.4 - Finished equality assumption logic during popFront, removing
+                 unneeded compares to get proper order (not stable).
 */
 import std.stdio;
 import std.algorithm;
@@ -57,6 +59,7 @@ enum Reorder {
     left & right checks unneeded after it's been re-ordered. This is for masking*/
     mask = 0x0f,            //for normal compares during reordering
     eq1 = 0x10, eq2 = 0x20, //flags for first two equal, second two equal.
+    mask_eq = eq1 | eq2,
     lm_1 = lm | eq1, 
     lmr_1 = lmr | eq1, lmr_2 = lmr | eq2, lmr_3 = lmr | eq1 | eq2,
 
@@ -73,10 +76,10 @@ enum RangeState {
     thirdUnordered = 2, //no need for second compare to know we use the middle value
     thirdUnordered_lmEqual = thirdUnordered | Reorder.eq1, //second and third in this case
     allUnordered   = 4,
-    lmEqual  = Reorder.eq1,
-    mrEqual  = Reorder.eq2,
-    allEqual = Reorder.eq1 | Reorder.eq2
-
+    lmEqual  = hasSubRanges | Reorder.eq1,
+    mrEqual  = hasSubRanges | Reorder.eq2,
+    allEqual = hasSubRanges | Reorder.eq1 | Reorder.eq2,
+    processAssuming = 0x100,
 }
 
 ///
@@ -325,30 +328,112 @@ struct MCS(T) {
                     }
 
                     shiftLeft();
-                    //check if unordered, if it's ordered further checks aren't
-                    //required for sorted order.
-                    if (rangeState == RangeState.hasSubRanges)
-                        return;
+                    //check if unordered, or for order changes needed.
+                    with (RangeState) switch(rangeState) {
+                        case lmEqual:
+                            rangeState = hasSubRanges;
+                        case hasSubRanges:
+                            return;
+                        
+                        case mrEqual:
+                        case allEqual:
+                            rangeState = lmEqual;
+                            return;
+
+                        case thirdUnordered_lmEqual:
+                            rangeState = thirdUnordered;
+                        
+                        //unordered needs update.
+                        default:
+                            break;
+                    }
                 }
 
-                //previous assumption based on location, needs full resort
-                if (rangeState == RangeState.thirdUnordered) {
-                    auto order = determineReorderSubRange!(MCS, false)(*master, triRange);
-                    orderSort(order, triRange);
-                    rangeState = RangeState.hasSubRanges;
-                } else if (leftRange.getValue > middleRange.getValue) {
-                //determine if reorder is needed
-//                    auto order = determineReorderSubRange!(MCS, true)(*master, triRange);
-//                    orderSort(order, triRange);
-                    
-                    //drops from 31 max to 25
-                    if (triRange[2] != Reorder.empty) {
+                Reorder order;
+                int cmpResult;
+                with(RangeState) switch(rangeState) {
+                    //assumeable half
+                    case thirdUnordered_lmEqual:
+                        rangeState = allUnordered;
+                        goto case processAssuming;
+
+                    case lmEqual:
+                        //if handling just two...
+                        if (triRange[2] == Reorder.empty) {
+                            rangeState = allUnordered;
+                            orderSort(Reorder.ml, triRange);
+                            break;
+                        }
+                        
+                    case allEqual:
+                        rangeState = cast(RangeState)
+                                (thirdUnordered | ((rangeState & Reorder.eq2) >> 1));
+
+                        //make sure our casting ended up a legal enum
+                        assert(rangeState == thirdUnordered || rangeState == thirdUnordered_lmEqual);
+                        //goto case processAssuming;
+                    case processAssuming:
                         orderSort(Reorder.rlm, triRange);
-                        debug {assert(leftRange.getValue <= rightRange.getValue);}
-                        rangeState = RangeState.thirdUnordered;
-                    } else
-                        orderSort(Reorder.ml, triRange);
+                        break;
+                    
+                    case mrEqual:
+                        cmpResult = leftRange.getValue.opCmp(middleRange.getValue);
+                        // if equal, change to all Equal and move on
+                        if (cmpResult == 0)
+                            rangeState = allEqual;
+                        else if (cmpResult > 0) {
+                            // rlm if greater
+                            rangeState = thirdUnordered_lmEqual;
+                            goto case processAssuming;
+                        }
+
+                        // if less than we leave state as is and move on.
+                        break;
+
+                    case hasSubRanges:
+                        cmpResult = leftRange.getValue.opCmp(middleRange.getValue);
+
+                        //three values
+                        if (triRange[2] != Reorder.empty) {
+                            // mlr or rlm so far if greater
+                            if (cmpResult > 0) {
+                                rangeState = thirdUnordered;
+                                goto case processAssuming;
+                            // if equal, change to lmEqual and move on
+                            } else if (cmpResult == 0)
+                                rangeState = lmEqual;
+                        //just two values
+                        } else {
+                            if (cmpResult == 0)
+                                rangeState = lmEqual;
+                            else if (cmpResult > 0)
+                                orderSort(Reorder.ml, triRange);
+                        }
+                        break;
+
+                    case thirdUnordered:
+                    case allUnordered:
+                        order = determineReorderSubRange!(MCS, false)(*master, triRange);
+                        orderSort(order, triRange);
+
+                        rangeState = cast(RangeState)
+                                (hasSubRanges | (order & Reorder.mask_eq));
+                        
+                        //proper enum confirmation
+                        assert((rangeState == hasSubRanges) ||
+                                (rangeState == lmEqual) ||
+                                (rangeState == mrEqual) ||
+                                (rangeState == allEqual), text("Failed enum ensuring: ", rangeState));
+                    break;
+
+                    default:
+                        assert(0, text("Unhandled case:", rangeState));
                 }
+/*
+                  writeln(rangeState);
+                  writeln(triRange);
+                  print();
+*/
             }
         }
         
@@ -774,6 +859,30 @@ unittest {
     ulong runCount;
     ulong maxCount; //noted for any individual compare
     
+    //manual entry for breaking and edge cases to fix/improve on.
+/*
+    toSort = [Int(0),Int(0),Int(1),
+              Int(0),Int(0),Int(1),
+              Int(0),Int(0),Int(2)];
+    sorted[] = Int(-1);
+    Int.count = 0;
+    auto mcsx = MCS!Int(toSort);
+    
+    //save use forces me to identify issues with save implimentation
+    //due to use of pointer from MCS.Range back to MCS
+    int i3;
+    foreach(x; mcsx) {
+        sorted[i3] = x;
+        i3++;
+    }
+    
+    sorted2[] = toSort[];
+    sorted2.sort;
+    assert(sorted2 == sorted, text("\nto Sort:   ", toSort,
+                                   "\nsorted:    ", sorted,
+                                   "\nShould be: ", sorted2));  //ensures data integrity & order
+
+*/
     void genElements(Int[] toFill) {
         for (int i = 0; i<elements; i++) {
             toFill[0] = Int(i, elements-toFill.length);
@@ -788,6 +897,8 @@ unittest {
                 int lazyCnt = Int.count;    //minimum setting up the structures
                 int i2;
                 
+                //save use forces me to identify issues with save implimentation
+                //due to use of pointer from MCS.Range back to MCS
                 foreach(x; mcs.save) {
                     sorted[i2] = x;
                 //if identical, check stability order.
@@ -811,7 +922,9 @@ unittest {
                 maxCount = max(maxCount, Int.count);
                 sorted2[] = toSort[];
                 sorted2.sort;
-                assert(sorted2 == sorted);  //ensures data integrity & order
+                assert(sorted2 == sorted, text("\nto Sort:   ", toSort,
+                                               "\nsorted:    ", sorted,
+                                               "\nShould be: ", sorted2));  //ensures data integrity & order
             }
         }
     }
@@ -853,19 +966,19 @@ $ ./mcs.exe
 Average Compares: 2.37
 [0, 0, 0, 0, 0, 0, 0, 0, 0]-[0, 0, 0, 0, 0, 0, 0, 0, 0] compares:  8/12 : 12
 [0, 0, 0, 0, 0, 0, 0, 1, 0]-[0, 0, 0, 0, 0, 0, 0, 0, 1] compares:  9/13 : 13
-[0, 0, 0, 0, 0, 1, 0, 0, 0]-[0, 0, 0, 0, 0, 0, 0, 0, 1] compares:  8/14 : 14
-[0, 0, 0, 0, 0, 1, 0, 1, 0]-[0, 0, 0, 0, 0, 0, 0, 1, 1] compares:  9/15 : 15
-[0, 0, 0, 0, 1, 0, 0, 1, 0]-[0, 0, 0, 0, 0, 0, 0, 1, 1] compares: 10/16 : 16
-[0, 0, 0, 1, 2, 1, 0, 2, 0]-[0, 0, 0, 0, 0, 1, 1, 2, 2] compares: 11/17 : 17
-[0, 0, 1, 0, 0, 1, 0, 2, 0]-[0, 0, 0, 0, 0, 0, 1, 1, 2] compares:  9/18 : 18
-[0, 0, 1, 0, 1, 0, 0, 2, 0]-[0, 0, 0, 0, 0, 0, 1, 1, 2] compares: 10/19 : 19
-[0, 0, 1, 1, 2, 1, 0, 2, 0]-[0, 0, 0, 0, 1, 1, 1, 2, 2] compares: 11/20 : 20
-[0, 0, 3, 1, 3, 1, 0, 2, 0]-[0, 0, 0, 0, 1, 1, 2, 3, 3] compares: 11/21 : 21
-[0, 1, 3, 0, 3, 2, 0, 4, 2]-[0, 0, 0, 1, 2, 2, 3, 3, 4] compares: 10/22 : 22
-[0, 1, 3, 1, 4, 2, 0, 3, 2]-[0, 0, 1, 1, 2, 2, 3, 3, 4] compares: 11/23 : 23
-[0, 3, 1, 1, 4, 2, 0, 3, 2]-[0, 0, 1, 1, 2, 2, 3, 3, 4] compares: 12/24 : 24
+[0, 0, 0, 0, 0, 0, 1, 2, 1]-[0, 0, 0, 0, 0, 0, 1, 1, 2] compares:  9/14 : 14
+[0, 0, 0, 0, 0, 2, 1, 1, 1]-[0, 0, 0, 0, 0, 1, 1, 1, 2] compares:  8/15 : 15
+[0, 0, 0, 0, 0, 2, 1, 2, 1]-[0, 0, 0, 0, 0, 1, 1, 2, 2] compares:  9/16 : 16
+[0, 0, 0, 0, 2, 0, 1, 2, 1]-[0, 0, 0, 0, 0, 1, 1, 2, 2] compares: 10/17 : 17
+[0, 0, 0, 1, 2, 1, 0, 2, 0]-[0, 0, 0, 0, 0, 1, 1, 2, 2] compares: 11/18 : 18
+[0, 0, 1, 2, 3, 2, 0, 3, 0]-[0, 0, 0, 0, 1, 2, 2, 3, 3] compares: 11/19 : 19
+[0, 0, 2, 3, 4, 3, 1, 4, 1]-[0, 0, 1, 1, 2, 3, 3, 4, 4] compares: 11/20 : 20
+[0, 0, 4, 2, 4, 2, 1, 3, 1]-[0, 0, 1, 1, 2, 2, 3, 4, 4] compares: 11/21 : 21
+[0, 1, 3, 1, 3, 1, 0, 4, 2]-[0, 0, 1, 1, 1, 2, 3, 3, 4] compares: 11/22 : 22
+[0, 2, 5, 1, 5, 3, 0, 6, 4]-[0, 0, 1, 2, 3, 4, 5, 5, 6] compares: 11/23 : 23
+[0, 5, 2, 1, 5, 3, 0, 6, 4]-[0, 0, 1, 2, 3, 4, 5, 5, 6] compares: 12/24 : 24
 Lazy Average: 10.2106
-     Average: 18.5173
+     Average: 17.5863
 */
 
 //an int, but retains counts for sorting comparison.
