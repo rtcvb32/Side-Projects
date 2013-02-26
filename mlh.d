@@ -2,19 +2,16 @@
     Author: Ryan Cecil
     Date: Jan 06 2013
     Last Updated: Jan 08 2013
-    Description: Incorporates useage of BitArray with LZW and huffman compression.
+    Description: Incorporates useage of BitArray with LZ77 and huffman compression.
                 Currently in development and API will likely change and be refactored.
                 Highly Verbose for debugging, lacks full documentation and unittests.
                 MLH (Multi-level-Huffman) lacks tree save/load functions.
-                
-                LZW may be wrong name; However it's a window sliding compression using
-                a fixed size for window offset, size, and raw/unencoded characters.
                 
                 Be warned, it may look a little ugly...
 
     Compiler: Win32 dmd 2.061
                 
-    LZW Usage:
+    LZ Usage:
 ---
     //rather than hello world, forces compression. Borrowed from zlib
     string helloString = "Hello Hello";
@@ -72,51 +69,73 @@ import std.stdio;
 import bitmanip; //std. missing for local test copy.
 import std.conv;
 
-//lzw implimentation. Not fully tested.
-align(1) struct LZW(int window, int length) {
-    static assert((length + window + 1) % 8 == 0, "must be in byte incriments");
+//lz77 implimentation. Not fully tested.
+//merely a struct format
+align(1) struct LZ(int windowBits, int lengthBits) {
+    static assert((lengthBits + windowBits + 1) % 8 == 0, "must be in byte incriments");
     align(1) static struct Raw {
         mixin(bitfields!(
                 bool, "isRaw", 1,
-                uint, "length", window + length));
+                uint, "length", windowBits + lengthBits));
     }
     align(1) static struct Compacted {
         mixin(bitfields!(
-                bool, "isRaw", 1,   //identical field required to work.
-                uint, "window", window,
-                uint, "length", length));
+                void, "", 1,
+                uint, "window", windowBits,
+                uint, "length", lengthBits));
     }
     
-    //union broke right now, so we use two structs instead. 2.061 beta
+    //Forward reference issues if we try to convert to all the data within
+    //the union. v2.061
     union {
-        Raw raw;
-        Compacted compact;
+        private Raw raw;
+        private Compacted compact;
     }
     
-    bool isRaw() @property const @safe nothrow {
+    bool isRaw() @property const @safe pure nothrow {
         return raw.isRaw;
     }
     
+    void isRaw(bool r) @property @safe pure nothrow {
+        raw.isRaw = r;
+        raw.length = 0;
+    }
+    
+    uint length() @property const @safe pure nothrow {
+        return raw.isRaw ? raw.length : compact.length;
+    }
+    
+    void length(uint len) @property @safe pure nothrow {
+        if (raw.isRaw)
+            raw.length = len;
+        else
+            compact.length = len;
+    }
+
+    uint window() @property const @safe pure nothrow {assert(!isRaw); return compact.window;}
+    void window(uint pos) @property @safe pure nothrow {assert(!isRaw); compact.window = pos;}
+
     string toString() const {
         if (isRaw)
-            return "LZW-Raw{" ~ to!string(raw.length) ~ "}";
+            return "LZ-Raw {" ~ to!string(raw.length) ~ "}";
         //else
-        return "LZW    {window: " ~ to!string(compact.window) ~ ", length:" ~ to!string(compact.length) ~ "}";
+        return "LZ    {window: " ~ to!string(compact.window) ~ ", length:" ~ to!string(compact.length) ~ "}";
     }
 
     enum windowMin = 1;
-    enum windowMax = (1 << window) - 1;
-    enum lengthMin = LZW.sizeof + 1; //to actually get compression
-    enum lengthMax = (1 << length) - 1;
-    enum rawMax = (1 << (window + length)) - 1;
+    enum windowMax = (1 << windowBits) - 1;
+    enum lengthMin = LZ.sizeof + 1; //to actually get compression
+    enum lengthMax = (1 << lengthBits) - 1;
+    enum rawMax = (1 << (windowBits + lengthBits)) - 1;
 }
 
-static assert(LZW!(11,4).sizeof == 2, "not compacted as small struct");
+static assert(LZ!(11,4).sizeof == 2, "not compacted as small struct");
 
-void[] lzwCompress(int window = 11, int length = 4)(const void[] rawInput) {
-    alias LZW!(window, length) Lzw;
+///
+void[] lzCompress(int window = 11, int length = 4)(const void[] rawInput) {
+    alias LZ!(window, length) Lz;
     BitArray ba_data;
-    Lzw lzw_data;
+    Lz lz_data;
     ubyte[] input = cast(ubyte[]) rawInput;
     ubyte[] window;
     int rawStart = 0;
@@ -127,86 +146,86 @@ void[] lzwCompress(int window = 11, int length = 4)(const void[] rawInput) {
         if (position < rawStart)
             continue;
 
-        lzw_data = windowSearch!Lzw(input, position);
-        if (lzw_data.isRaw)
+        lz_data = windowSearch!Lz(input, position);
+        if (lz_data.isRaw)
             continue;
         
         //uncompressed data
-        bulkRawWrite!Lzw(ba_data, input[rawStart .. position]);
-//       debug {writeln(ba_data);}
-        rawStart = position + lzw_data.compact.length;
+        bulkRawWrite!Lz(ba_data, input[rawStart .. position]);
+        rawStart = position + lz_data.length;
         
         //window/compressed data
-        ba_data.rawWrite(lzw_data);
-//        debug {writeln(lzw_data);writeln(ba_data);}
+        ba_data.rawWrite(lz_data);
     }
     
     //append last unused raw
-    bulkRawWrite!Lzw(ba_data, input[rawStart .. $]);
+    bulkRawWrite!Lz(ba_data, input[rawStart .. $]);
     
     void[] buff;
     ba_data.getBuffer(buff);
     return buff[0 .. (cast(int) ba_data.length / 8)];
 }
 
+//rough implimentations, scans the window area for the longest possible match
+//returns the position & length, or isRaw
 T windowSearch(T)(const ubyte[] input, int position) {
-    T lzw;
-    lzw.raw.isRaw = true;
+    T lz;
+    lz.isRaw = true;
 
     foreach(i; 0 .. position) {
         if ((position-i) <= T.windowMax && (position+T.lengthMin) < input.length &&
                 input[i .. i+T.lengthMin] == input[position .. position+T.lengthMin]) {
-            T lzwCurrent;
+            T lzCurrent;
             int length = T.lengthMin;
-            lzwCurrent.compact.isRaw = false;
-            lzwCurrent.compact.window = position - i;
+            lzCurrent.isRaw = false;
+            lzCurrent.window = position - i;
 
             while(length < T.lengthMax &&
                     (position+length) < input.length &&
                     input[i+length] == input[position+length]) {
                 length++;
             }
-            lzwCurrent.compact.length = length;
+            lzCurrent.length = length;
 
-            if (lzw.compact.length < lzwCurrent.compact.length)
-                lzw = lzwCurrent;
+            if (lz.length < lzCurrent.length)
+                lz = lzCurrent;
         }
     }
 
-    return lzw;
+    return lz;
 }
 
+//takes whole length of input and prepends a 'raw' LZ block.
+//repeats until full raw data is written
 void bulkRawWrite(T)(ref BitArray ba, const(ubyte)[] input) {
-    T lzw;
+    T lz;
 
     //append last unused raw
     while(input.length) {
-        lzw.raw.isRaw = true;
-        lzw.raw.length = min(input.length, T.rawMax);
-        ba.rawWrite(lzw);
-//        debug { writeln(lzw); }
+        lz.isRaw = true;
+        lz.length = min(input.length, T.rawMax);
+        ba.rawWrite(lz);
+
         foreach(i, ub; input) {
-            if (i >= lzw.raw.length)
+            if (i >= lz.length)
                 break;
             ba.rawWrite(ub);
-//            debug { writeln(ba[$-8 .. $].toString ~ " - " ~ to!string(cast(char) ub)); }
         }
-        input = input[lzw.raw.length .. $];
+        input = input[lz.length .. $];
     }
 }
 
-void[] lzwDeCompress(int window = 11, int length = 4)(const void[] input) {
-    alias LZW!(window,length) Lzw;
-    Lzw lzw;
+void[] lzDeCompress(int window = 11, int length = 4)(const void[] input) {
+    alias LZ!(window,length) Lz;
+    Lz lz;
     ubyte[] buffer;
     const BitArray ba = BitArray(cast(void[]) input);
     int offset;
     
     while(offset < ba.length) {
-        offset += ba.rawRead(lzw, offset);
-//        writeln(lzw.toString());
-        if (lzw.isRaw) {
-            for(int i = lzw.raw.length; i; i--) {
+        offset += ba.rawRead(lz, offset);
+        if (lz.isRaw) {
+            for(int i = lz.raw.length; i; i--) {
                 ubyte ub;
                 offset += ba.rawRead(ub, offset);
                 buffer ~= ub;
@@ -214,15 +233,19 @@ void[] lzwDeCompress(int window = 11, int length = 4)(const void[] input) {
         } else {
             //overlapping copy, likely long string like "*****"
             //can't have optimizations as they might not copy it right.screw it up.
-            if (lzw.compact.window < lzw.compact.length) {
-                buffer.length = buffer.length + lzw.compact.length;
-                auto lhs = buffer[($-lzw.compact.window-lzw.compact.length) .. $];
-                auto rhs = buffer[$-lzw.compact.length .. $];
-                //memmove(rhs.ptr, lhs.ptr, lzw.compact.length);
+            if (lz.compact.window < lz.compact.length) {
+                buffer.length = buffer.length + lz.compact.length;
+                auto lhs = buffer[($-lz.compact.window-lz.compact.length) .. $];
+                auto rhs = buffer[$-lz.compact.length .. $];
+                
+/*              memmove/memcpy failed with sections so close to eachother.
+                import std.c.string;
+                memcpy(rhs.ptr, lhs.ptr, lz.compact.length);
+*/
                 foreach(i, ref b; rhs)
                     b = lhs[i];
             } else
-                buffer ~= buffer[($-lzw.compact.window) .. ($-lzw.compact.window+lzw.compact.length)];
+                buffer ~= buffer[($-lz.compact.window) .. ($-lz.compact.window+lz.compact.length)];
         }
     }
 
@@ -232,46 +255,47 @@ void[] lzwDeCompress(int window = 11, int length = 4)(const void[] input) {
 unittest {
     string s = "Hello Hello";
     //2 byte struct sequence
-    void[] x = lzwCompress!()(s);
+    void[] x = lzCompress!()(s);
     writeln(x);
-    string y = cast(string) lzwDeCompress!()(x);
+    string y = cast(string) lzDeCompress!()(x);
 //    writeln(cast(string)y);
 //    assert(x.length < s.length);
     assert(y == s);
     
     //one byte mini-compress
-    void[] x2 = lzwCompress!(4,3)(s);
+    void[] x2 = lzCompress!(4,3)(s);
     writeln(x2);
     
-    string y2 = cast(string) lzwDeCompress!(4,3)(x2);
+    string y2 = cast(string) lzDeCompress!(4,3)(x2);
 //    writeln(cast(string)y);
     assert(x2.length < s.length);
     assert(y2 == s);
     
     string dups = "--------";
-    auto x3 = lzwCompress!(4,3)(dups);
+    auto x3 = lzCompress!(4,3)(dups);
     writeln(x3);
-    string y3 = cast(string) lzwDeCompress!(4,3)(x3);
+    string y3 = cast(string) lzDeCompress!(4,3)(x3);
+    writeln(y3);
+    writeln(dups);
     assert(y3 == dups);
 
     string dups2 = "abcabcabc";
-    auto x4 = lzwCompress!(4,3)(dups2);
+    auto x4 = lzCompress!(4,3)(dups2);
     writeln(x4);
-    string y4 = cast(string) lzwDeCompress!(4,3)(x4);
+    string y4 = cast(string) lzDeCompress!(4,3)(x4);
     assert(y4 == dups2);
 
     string longBuffer = dups ~ dups ~ dups ~ dups;
-    x3 = lzwCompress!(4,3)(longBuffer);
+    x3 = lzCompress!(4,3)(longBuffer);
     writeln(x3);
-    y3 = cast(string) lzwDeCompress!(4,3)(x3);
+    y3 = cast(string) lzDeCompress!(4,3)(x3);
     assert(y3 == longBuffer);
 
     //currently breaks
-    x3 = lzwCompress!()(longBuffer);
+    x3 = lzCompress!()(longBuffer);
     writeln(x3);
-    y3 = cast(string) lzwDeCompress!()(x3);
+    y3 = cast(string) lzDeCompress!()(x3);
     assert(y3 == longBuffer);
-    
 }
 
 //huffman starts here. unions/repacking may be done later.
@@ -280,12 +304,19 @@ struct Node {
     Tree decodeTree;        //just the start of the tree.
     BitArray[] bitCodes;    //0 level only
     bool singleElement;
-    int singleElementValue;
-    int value;
-    int weight;
+    uint singleElementValue;
     
-    enum maxValues = ubyte.max + 1;
-    enum maxNodesAllocate = (maxValues * 2) - 1;
+    uint convertedTo;        //simple conversion for type2 of mlh
+    
+    uint value;
+    uint weight;
+    
+    uint _maxValues = ubyte.max + 1;
+    
+    void maxValues(uint max) @property pure nothrow { _maxValues = max; }
+    uint maxValues()   const @property pure nothrow { return _maxValues; }
+    uint maxNodesAllocate()  @property pure const   { return (_maxValues * 2) - 1; }
+    
     //may impliment later; returned in the pair?
     enum State {
         OK,
@@ -307,8 +338,6 @@ struct Node {
 
             foreach(i, n; nextLevel) {
                 string s = n.toString(level+1);
-//                if (!s)
-//                    s = tabs ~ "{ " ~ to!string(i) ~ " }\n";
 
                 x ~= s;
             }
@@ -379,6 +408,7 @@ struct Tree {
     int weight;
     Node* node;
     
+    //for sorting, specifically for reordering weights
     int opCmp(const ref Tree rhs) const {
         //put empty weights at the end, the beginning it's sorted from lowest to highest.
         //So 123000 rather than 000123.
@@ -414,8 +444,8 @@ Node huffmanScan(const void[] input, int levels = 0) {
     return huffmanScan(nodes, input, levels);
 }
 
-void defaultAllocate(ref Node nodes) @property {
-    nodes.nextLevel.length = Node.maxValues;
+void defaultAllocate(ref Node nodes) {
+    nodes.nextLevel.length = nodes.maxValues;
 
     foreach(i, ref n; nodes.nextLevel)
         n.value = i;
@@ -458,16 +488,116 @@ void setFrom(ref Tree[] tree, ref Node head) @property {
     sort!()(tree);
 }
 
+//does arithmetic-like coding, but needs to be level0/order0 to work. 1 level is the same as order0.
+Node makeBitCodes(ref Node codes, int levels) {
+    int uniqueCodes;
+    ubyte[256] convertTo;
+    Node arithmetic;
+    
+    assert(levels, "need at least 1 level");
+    
+    foreach(i, ref node; codes.nextLevel) {
+        if (node.weight) {
+            convertTo[uniqueCodes] = cast(ubyte) i;
+            uniqueCodes++;
+        }
+    }
+    
+    arithmetic.nextLevel.length = uniqueCodes ^^ levels;
+    
+    foreach(i, ref node; arithmetic.nextLevel) {
+        int l = levels;
+        int id = i;
+        node.value = i;
+        while(l) {
+            node.weight += codes.nextLevel[convertTo[id % uniqueCodes]].weight;
+            id /= uniqueCodes;
+            l--;
+        }
+        arithmetic.weight += node.weight;
+    }
+    
+//    writeln(arithmetic.nextLevel);
+    makeBitCodes2(arithmetic);
+    return arithmetic;
+}
+
+//cycles though and makes the huffman tree, as well as encodes them into bits.
+void makeBitCodes2(ref Node codes) {
+    //stack storage until we know if we even need it, and only allocate what we
+    //need to decode the tree.
+    Tree[] wholeTree;
+    Tree[] range;
+    int emptyNode;  //according to 'range'
+    bool level0 = true;
+
+    wholeTree.length = codes.nextLevel.length*2;
+    wholeTree[0 .. $].setFrom(codes);
+    writeln(wholeTree);
+    
+    foreach(i, ref n; wholeTree) {
+        //no weights (left?) should be at end after being sorted
+        if (!n.weight) {
+            emptyNode = i;
+            break;
+        }
+
+        if (n.node.nextLevel) {
+            level0 = false;
+            makeBitCodes(codes.nextLevel[n.node.value]); //n is a temp, can't use it.
+        }
+    }
+    
+/*    writeln(codes);
+    writeln(wholeTree);
+    writeln(emptyNode);
+  */  
+    assert(emptyNode);
+    
+    if (level0) {
+        //if level 0 and has only one entry, no need to do any work.
+        if (emptyNode == 1) {
+            codes.singleElement = true;
+            codes.singleElementValue = wholeTree[0].node.value;
+        } else {
+            assert((emptyNode*2)-1 <= wholeTree.length);
+            //more than one entry.
+            range = wholeTree[0 .. (emptyNode*2)-1].dup;
+            
+            while(range.length > 2 && range[0].weight && range[1].weight) {
+                range[emptyNode].weight = range[0].weight + range[1].weight;
+                
+                //address stable since 0 & 1 won't be moving.
+                range[emptyNode].left = &range[0];
+                range[emptyNode].right = &range[1];
+                
+                emptyNode -= 1;
+                range = range[2 .. $];
+                
+                sort!()(range[0 .. emptyNode]);
+            }
+            
+            //check if there's only one value. (if so no need for bitcode allocation
+            BitArray ba;    //for bitcode as it walks the tree.
+            codes.bitCodes.length = codes.maxValues;
+            
+            nodeWalk(codes, &range[0], ba);
+            codes.decodeTree = range[0];
+//            nodeWalk(codes, &range[0], BitArray());
+        }
+    }
+}
+
 //cycles though and makes the huffman tree, as well as encodes them into bits.
 void makeBitCodes(ref Node codes) {
     //stack storage until we know if we even need it, and only allocate what we
     //need to decode the tree.
-    Tree[Node.maxNodesAllocate] wholeTree;
+    Tree[] wholeTree; wholeTree.length = codes.maxNodesAllocate;
     Tree[] range;
     int emptyNode;  //according to 'range'
     bool level0 = true;
     
-    wholeTree[0 .. $].setFrom(codes);
+    wholeTree.setFrom(codes);
     
     foreach(i, ref n; wholeTree) {
         //no weights (left?) should be at end after being sorted
@@ -509,7 +639,7 @@ void makeBitCodes(ref Node codes) {
             
             //check if there's only one value. (if so no need for bitcode allocation
             BitArray ba;    //for bitcode as it walks the tree.
-            codes.bitCodes.length = Node.maxValues;
+            codes.bitCodes.length = codes.maxValues;
             
             nodeWalk(codes, &range[0], ba);
             codes.decodeTree = range[0];
@@ -549,15 +679,11 @@ ref BitArray mlhCompress(ref BitArray output, const ref Node huffman, const void
     //if this is worked on and improved, this will be fixed. (it is in my C version)
     foreach(i, ub; inp[0 .. levels]) {
         output.rawWrite(ub);
-//        writeln(output);
     }
     
     //k, now we encode the remainder.
-    foreach(i; 0 .. inp.length-levels) {
-//        writeln(cast(char[]) inp[i .. i+levels+1], " - ", huffman.encode(inp[i .. i+levels+1]));
+    foreach(i; 0 .. inp.length-levels)
         output ~= huffman.encode(inp[i .. i+levels+1]);
-//        writeln(output);
-    }
     
     return output;
 }
@@ -605,25 +731,16 @@ void[] mlhDecompress(const ref Node huffman, const ref BitArray input, int force
 
 //save mlh-tree into bitarray
 void mlhWrite(ref BitArray output, const ref Node huffmanTree) {
-/*    writeln(output);
-    writeln(huffmanTree);
-    writeln(huffmanTree.decodeTree);
-    writeln(huffmanTree.singleElement);
-    */
     if (huffmanTree.singleElement) {
         output ~= false;    //no new levels
         output ~= false;    //no splits (tree encoding)
         
         output.rawWrite(cast(ubyte) huffmanTree.singleElementValue);
-//        writeln("Single Element/value");
     } else if (huffmanTree.decodeTree.weight) {
         output ~= false;
-//        writeln("tree");
         huffmanWriteTree(output, &huffmanTree.decodeTree);
     } else {
         output ~= true;
-//        writeln("Another level (", output.length, " bits)");
-//        writeln(output);
         //determine how many numbers are needed
         //if it's above 32 then we use 256 individual bits
         int codesCount;
@@ -638,40 +755,24 @@ void mlhWrite(ref BitArray output, const ref Node huffmanTree) {
         //use 256bit? If not, append the count.
         output ~= codesCount >= 32;
         if (codesCount < 32) {
-//            writeln(output);
-//            writeln("use raw bytes, ", codesCount, " elements");
             output.intWrite(codesCount, 1, 31);
         }
-        // else 
-//            writeln("use 256bit");
-
-//        writeln(output);
 
         int previousCode = 0;
         foreach(i, ref nl; huffmanTree.nextLevel) {
             //if 256bit note all as used/not used
-            if (codesCount >= 32) {
+            if (codesCount >= 32)
                 output ~= nl.weight > 0;
-/*                if (nl.weight)
-                    writeln("level data");
-                else
-                    writeln("empty");
-                    */
-            }
-                
+            
             if (nl.weight) {
                 //if not 256bit, output the whole code
                 if (codesCount < 32) {
-//                    output.rawWrite(cast(ubyte) i);
                     output.intWrite(i, previousCode, ubyte.max);
-//                    writeln(output);
                     previousCode = i;
                 }
-//                writeln("Value '", cast(char) i, "'");
                 mlhWrite(output, huffmanTree.nextLevel[i]);
             }
         }
-//        writeln("End of level");
     }
 }
 
@@ -680,12 +781,8 @@ void huffmanWriteTree(ref BitArray output, const Tree* tree) {
     if (tree.left is null && tree.right is null) {
         output ~= false;
         output.rawWrite(cast(ubyte) tree.node.value);
-//        writeln("value - '", cast(char) tree.node.value, "'");
-//        writeln(output);
     } else {
         output ~= true;
-//        writeln("Split");
-//        writeln(output);
         huffmanWriteTree(output, tree.left);
         huffmanWriteTree(output, tree.right);
     }
@@ -706,7 +803,6 @@ Node mlhRead(const BitArray input, ref int offset) {
     
     offset += input.rawRead(bit, offset);
     if (bit) {  //another level
-//        writeln("Another level");
     
         //do we use 256 or individual bytes?
         offset += input.rawRead(bit, offset);
@@ -744,9 +840,9 @@ Node huffmanReadTree(const BitArray input) {
 }
 
 int huffmanReadTree(const BitArray input, ref Node node) {
-    node.bitCodes.length = Node.maxValues;
+    node.bitCodes.length = node.maxValues;
     Tree[] tree;
-    tree.length = Node.maxNodesAllocate;
+    tree.length = node.maxNodesAllocate;
     node.defaultAllocate;
     int offset;
     int freeLeaf;
@@ -772,8 +868,6 @@ void huffmanReadTreeWalk(ref Node node,
     tree[freeLeaf].weight = 1;
     
     if (bit) {  //split
-//        writeln("Split");
-//        writeln(input[offset .. $]);
         freeLeaf++;
         tree[thisLeaf].left = &tree[freeLeaf];
         code ~= false;
@@ -789,9 +883,6 @@ void huffmanReadTreeWalk(ref Node node,
         ubyte val;
         offset += input.rawRead(val, offset);
         
-//        writeln("value '", cast(char) val, "'");
-//        writeln(input[offset .. $]);
-        
         tree[freeLeaf].node = &node.nextLevel[val];
 
         if (!freeLeaf) {
@@ -799,7 +890,7 @@ void huffmanReadTreeWalk(ref Node node,
             node.singleElementValue = val;
         } else {
             if (!node.bitCodes.length)
-                node.bitCodes.length = Node.maxValues;
+                node.bitCodes.length = node.maxValues;
             node.nextLevel[val].weight = 1;
             node.bitCodes[val] = code.dup;
         }
@@ -807,11 +898,37 @@ void huffmanReadTreeWalk(ref Node node,
         freeLeaf++;
     }
 }
+/+
+BitArray mlhCompress2(const ref Node huffman, const ref Node original, const void[] input, int levels) {
+    BitArray output;
+    mlhCompress2(output, huffman, original, input, levels);
+    return output;
+}
 
+ref BitArray mlhCompress2(ref BitArray output, const ref Node huffman, const ref Node original, const void[] input, int levels) {
+    const ubyte[] inp = cast(const(ubyte[])) input;
+    int code;
+    int len = huffman.nextLevel.length;
+
+    //k, now we encode the remainder.
+    foreach(i, ub; inp) {
+        if (i && (i % levels) == 0) {
+            output ~= huffman.bitCodes[code];
+            code = 0;
+        } else {
+            code *= len;
+            code += original.nextLevel[ub].convertedTo;
+        }
+    }
+    
+    return output;
+}
++/
 
 unittest {
-    auto x = huffmanScan("just a test.", 0);
-    auto y = huffmanScan("just a test.", 1);
+    string jat = "just a test.";
+    auto x = huffmanScan(jat, 0);
+    auto y = huffmanScan(jat, 1);
     writeln(y);
     
     makeBitCodes(x);
@@ -819,9 +936,9 @@ unittest {
     makeBitCodes(y);
     writeln(y);
     
-    auto encoded = mlhCompress(x, "just a test.", 0);
+    auto encoded = mlhCompress(x, jat, 0);
     writeln(encoded);
-    auto encoded2 = mlhCompress(y, "just a test.", 1);
+    auto encoded2 = mlhCompress(y, jat, 1);
     writeln(encoded2);
     
     string decoded = cast(string) mlhDecompress(x, encoded);
@@ -882,6 +999,18 @@ unittest {
     auto decoded2_x = cast(string) mlhDecompress(load_2, encoded2_x, fox.length);
     assert(decoded2_x == decoded2);
 //    writeln("done!");
+
+
+    string mlh2 = "000011122233344556667788";
+    auto mlh2_s = huffmanScan(mlh2, 0);
+    makeBitCodes(mlh2_s);
+    writeln(mlh2_s);
+    
+    //vague and incomplete.
+    /*
+    auto type2 = makeBitCodes(mlh2_s, 2);
+    writeln(type2);
+    */
 }
 
 unittest {
