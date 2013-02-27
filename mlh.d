@@ -10,17 +10,17 @@
                 Be warned, it may look a little ugly...
 
     Compiler: Win32 dmd 2.061
+    
                 
     LZ Usage:
 ---
     //rather than hello world, forces compression. Borrowed from zlib
     string helloString = "Hello Hello";
 
-    //2 byte struct sequence by default
-    void[] compressed = lzwCompress!()(helloString);
+    void[] compressed = lzwCompress(helloString);
     writeln(compressed);   //raw compressed state
 
-    string uncompressed = cast(string) lzwDeCompress!()(compressed);
+    string uncompressed = cast(string) lzwDeCompress(compressed);
     writeln(uncompressed);
 
     assert(helloString == uncompressed);
@@ -53,6 +53,12 @@
     writeln(decoded);
 ---
 
+Updates:
+    2/10/2013 - Removed most of uneeded outputs, removed 'w' from lz tag since it's
+        misleading.
+    2/26/2013 - Removed templates required using LZ, instead uses BitArray's intWrite.
+        Added a partial LMZA implimentation, called LZE
+
   TODO: Add more documentation, Remove explicit level requirement for mlhCompress.
        Change names to better reflect actual purpose and intent.
        Update raw characters (multiple level) to use intWrite instead.
@@ -64,123 +70,129 @@
        Remove debugging writeln's scattered throughout the code.
 */
 
+module mlh;
+
 import std.algorithm;
 import std.stdio;
 import bitmanip; //std. missing for local test copy.
 import std.conv;
 
 //lz77 implimentation. Not fully tested.
-//merely a struct format
-align(1) struct LZ(int windowBits, int lengthBits) {
-    static assert((lengthBits + windowBits + 1) % 8 == 0, "must be in byte incriments");
-    align(1) static struct Raw {
-        mixin(bitfields!(
-                bool, "isRaw", 1,
-                uint, "length", windowBits + lengthBits));
-    }
-    align(1) static struct Compacted {
-        mixin(bitfields!(
-                void, "", 1,
-                uint, "window", windowBits,
-                uint, "length", lengthBits));
-    }
-    
-    //Forward reference issues if we try to convert to all the data within
-    //the union. v2.061
-    union {
-        private Raw raw;
-        private Compacted compact;
-    }
-    
-    bool isRaw() @property const @safe pure nothrow {
-        return raw.isRaw;
-    }
-    
-    void isRaw(bool r) @property @safe pure nothrow {
-        raw.isRaw = r;
-        raw.length = 0;
-    }
-    
-    uint length() @property const @safe pure nothrow {
-        return raw.isRaw ? raw.length : compact.length;
-    }
-    
-    void length(uint len) @property @safe pure nothrow {
-        if (raw.isRaw)
-            raw.length = len;
-        else
-            compact.length = len;
-    }
-
-    uint window() @property const @safe pure nothrow {assert(!isRaw); return compact.window;}
-    void window(uint pos) @property @safe pure nothrow {assert(!isRaw); compact.window = pos;}
-
-    string toString() const {
-        if (isRaw)
-            return "LZ-Raw {" ~ to!string(raw.length) ~ "}";
-        //else
-        return "LZ    {window: " ~ to!string(compact.window) ~ ", length:" ~ to!string(compact.length) ~ "}";
-    }
-
+//for BitArray constants mostly
+struct LZ {
     enum windowMin = 1;
-    enum windowMax = (1 << windowBits) - 1;
-    enum lengthMin = LZ.sizeof + 1; //to actually get compression
-    enum lengthMax = (1 << lengthBits) - 1;
-    enum rawMax = (1 << (windowBits + lengthBits)) - 1;
+    int windowBits = 11;
+    int lengthBits = 4;
+
+    ///determine max window size (behind) that it can search
+    int windowMax() const pure @property @safe {
+        return (1 << windowBits) - windowMin;
+    }
+
+    ///minimum length for any compression possible.
+    int lengthMin() const pure @property @safe {
+        //if it's equal by bytes, 1 byte more
+        //otherwise extra bits to the rounding of the byte is enough.
+        return ((windowBits + lengthBits + 7) / 8) + 1;
+    }
+    
+    ///maximum length this can support based on settings
+    int lengthMax() const pure @property @safe {
+        return (1 << lengthBits) + lengthMin - 1;
+    }
+
+    enum rawMin = 1;    //fit in 1 byte
+    enum rawMax = 128;
+    
+    //modifyable
+    int windowPos; //going back
+    int length;
+    
+    //any illegal data is 'raw'.
+    bool isRaw() const pure @property @safe {
+        return (windowPos < windowMin) || (windowPos > windowMax) ||
+                (length < lengthMin) || (length > lengthMax);
+    }
+    void clear() pure @safe{ windowPos = length = 0; }
+    void print() {
+        writeln("windowMax: ", windowMax);
+        writeln("lengthMin: ", lengthMin);
+        writeln("lengthMax: ", lengthMax);
+        writeln("windowPos: ", windowPos);
+        writeln("length: ", length);
+        writeln("isRaw: ", this.isRaw);
+    }
 }
 
-static assert(LZ!(11,4).sizeof == 2, "not compacted as small struct");
+unittest {
+    LZ lz;
+    assert(lz.isRaw);
+    lz.windowPos = 1;
+    assert(lz.isRaw);
+    lz.length = 1;
+    assert(lz.isRaw); //should be wrong until length is 3
+    lz.length = 2;
+    assert(lz.isRaw);
+    lz.length = 3;
+    assert(!lz.isRaw); //should be wrong until length is 3
+}
 
 ///
-void[] lzCompress(int window = 11, int length = 4)(const void[] rawInput) {
-    alias LZ!(window, length) Lz;
+void[] lzCompress(const void[] rawInput,
+                int windowBits = 11, int lengthBits = 4,
+                int maxBits = 16) {
     BitArray ba_data;
-    Lz lz_data;
+    LZ lz_data = LZ(windowBits, lengthBits);
     ubyte[] input = cast(ubyte[]) rawInput;
     ubyte[] window;
     int rawStart = 0;
     
     ba_data.reserve(input.length * 10);
-
+    //1 byte information specifying bit lengths for window/length
+    //
+    ba_data.intWrite(windowBits, 1, maxBits);
+    ba_data.intWrite(lengthBits, 1, maxBits);
+    
     foreach(int position; rawStart .. input.length) {
         if (position < rawStart)
             continue;
 
-        lz_data = windowSearch!Lz(input, position);
+        lz_data = windowSearch(lz_data, input, position);
         if (lz_data.isRaw)
             continue;
         
         //uncompressed data
-        bulkRawWrite!Lz(ba_data, input[rawStart .. position]);
-        rawStart = position + lz_data.length;
+        bulkRawWrite(lz_data, ba_data, input[rawStart .. position]);
         
         //window/compressed data
-        ba_data.rawWrite(lz_data);
+        ba_data ~= false;   //prefix
+        ba_data.intWrite(lz_data.windowPos, lz_data.windowMin, lz_data.windowMax);
+        ba_data.intWrite(lz_data.length, lz_data.lengthMin, lz_data.lengthMax);
+        rawStart = position + lz_data.length;
+        lz_data.clear();
     }
     
     //append last unused raw
-    bulkRawWrite!Lz(ba_data, input[rawStart .. $]);
+    bulkRawWrite(lz_data, ba_data, input[rawStart .. $]);
     
     void[] buff;
     ba_data.getBuffer(buff);
-    return buff[0 .. (cast(int) ba_data.length / 8)];
+    return buff[0 .. ((cast(int) ba_data.length + 7) / 8)];
 }
 
 //rough implimentations, scans the window area for the longest possible match
 //returns the position & length, or isRaw
-T windowSearch(T)(const ubyte[] input, int position) {
-    T lz;
-    lz.isRaw = true;
+LZ windowSearch(LZ lz, const ubyte[] input, int position) {
+    lz.clear();
 
     foreach(i; 0 .. position) {
-        if ((position-i) <= T.windowMax && (position+T.lengthMin) < input.length &&
-                input[i .. i+T.lengthMin] == input[position .. position+T.lengthMin]) {
-            T lzCurrent;
-            int length = T.lengthMin;
-            lzCurrent.isRaw = false;
-            lzCurrent.window = position - i;
+        if ((position-i) <= lz.windowMax && (position+lz.lengthMin) < input.length &&
+                input[i .. i+lz.lengthMin] == input[position .. position+lz.lengthMin]) {
+            LZ lzCurrent = lz;
+            int length = lz.lengthMin;
+            lzCurrent.windowPos = position - i;
 
-            while(length < T.lengthMax &&
+            while(length < lz.lengthMax &&
                     (position+length) < input.length &&
                     input[i+length] == input[position+length]) {
                 length++;
@@ -197,14 +209,14 @@ T windowSearch(T)(const ubyte[] input, int position) {
 
 //takes whole length of input and prepends a 'raw' LZ block.
 //repeats until full raw data is written
-void bulkRawWrite(T)(ref BitArray ba, const(ubyte)[] input) {
-    T lz;
-
+void bulkRawWrite(LZ lz, ref BitArray ba, const(ubyte)[] input) {
     //append last unused raw
     while(input.length) {
-        lz.isRaw = true;
-        lz.length = min(input.length, T.rawMax);
-        ba.rawWrite(lz);
+        lz.clear();
+        lz.length = min(input.length, LZ.rawMax);
+        ba ~= true; //prepend 'raw' bit
+
+        ba.intWrite(lz.length, lz.rawMin, lz.rawMax);
 
         foreach(i, ub; input) {
             if (i >= lz.length)
@@ -215,37 +227,47 @@ void bulkRawWrite(T)(ref BitArray ba, const(ubyte)[] input) {
     }
 }
 
-void[] lzDeCompress(int window = 11, int length = 4)(const void[] input) {
-    alias LZ!(window,length) Lz;
-    Lz lz;
+///
+void[] lzDeCompress(const void[] input, int maxBits = 16) {
     ubyte[] buffer;
     const BitArray ba = BitArray(cast(void[]) input);
+    int window, length;
     int offset;
+    bool isRaw;
+    LZ lz;
+    
+    //16/16 limitation keeps down to 1 byte for data
+    offset += ba.intRead(lz.windowBits, offset, 1, maxBits);
+    offset += ba.intRead(lz.lengthBits, offset, 1, maxBits);
     
     while(offset < ba.length) {
-        offset += ba.rawRead(lz, offset);
-        if (lz.isRaw) {
-            for(int i = lz.raw.length; i; i--) {
+        offset += ba.rawRead(isRaw, offset);
+        if (isRaw) {
+            offset += ba.intRead(lz.length, offset, lz.rawMin, lz.rawMax);
+            for(int i = lz.length; i; i--) {
                 ubyte ub;
                 offset += ba.rawRead(ub, offset);
                 buffer ~= ub;
             }
         } else {
+            offset += ba.intRead(lz.windowPos, offset, lz.windowMin, lz.windowMax);
+            offset += ba.intRead(lz.length, offset, lz.lengthMin, lz.lengthMax);
+            
             //overlapping copy, likely long string like "*****"
             //can't have optimizations as they might not copy it right.screw it up.
-            if (lz.compact.window < lz.compact.length) {
-                buffer.length = buffer.length + lz.compact.length;
-                auto lhs = buffer[($-lz.compact.window-lz.compact.length) .. $];
-                auto rhs = buffer[$-lz.compact.length .. $];
+            if (lz.windowPos < lz.length) {
+                buffer.length = buffer.length + lz.length;
+                auto lhs = buffer[($-lz.windowPos-lz.length) .. $];
+                auto rhs = buffer[$-lz.length .. $];
                 
-/*              memmove/memcpy failed with sections so close to eachother.
+/*              memmove/memcpy failed with sections so close to eachother. likely 32bit copy used
                 import std.c.string;
-                memcpy(rhs.ptr, lhs.ptr, lz.compact.length);
+                memcpy(rhs.ptr, lhs.ptr, lz..length);
 */
                 foreach(i, ref b; rhs)
                     b = lhs[i];
             } else
-                buffer ~= buffer[($-lz.compact.window) .. ($-lz.compact.window+lz.compact.length)];
+                buffer ~= buffer[($-lz.windowPos) .. ($-lz.windowPos+lz.length)];
         }
     }
 
@@ -255,48 +277,240 @@ void[] lzDeCompress(int window = 11, int length = 4)(const void[] input) {
 unittest {
     string s = "Hello Hello";
     //2 byte struct sequence
-    void[] x = lzCompress!()(s);
+    void[] x = lzCompress(s);
     writeln(x);
-    string y = cast(string) lzDeCompress!()(x);
-//    writeln(cast(string)y);
-//    assert(x.length < s.length);
+//    writeln(cast(string) x);
+//    writeln(x.length);
+    string y = cast(string) lzDeCompress(x);
     assert(y == s);
     
     //one byte mini-compress
-    void[] x2 = lzCompress!(4,3)(s);
+    void[] x2 = lzCompress(s,4,3);
     writeln(x2);
     
-    string y2 = cast(string) lzDeCompress!(4,3)(x2);
+    string y2 = cast(string) lzDeCompress(x2);
 //    writeln(cast(string)y);
     assert(x2.length < s.length);
     assert(y2 == s);
     
     string dups = "--------";
-    auto x3 = lzCompress!(4,3)(dups);
+    auto x3 = lzCompress(dups,4,3);
     writeln(x3);
-    string y3 = cast(string) lzDeCompress!(4,3)(x3);
+    string y3 = cast(string) lzDeCompress(x3);
     writeln(y3);
     writeln(dups);
     assert(y3 == dups);
 
     string dups2 = "abcabcabc";
-    auto x4 = lzCompress!(4,3)(dups2);
+    auto x4 = lzCompress(dups2, 4,3);
     writeln(x4);
-    string y4 = cast(string) lzDeCompress!(4,3)(x4);
+    string y4 = cast(string) lzDeCompress(x4);
     assert(y4 == dups2);
 
     string longBuffer = dups ~ dups ~ dups ~ dups;
-    x3 = lzCompress!(4,3)(longBuffer);
+    x3 = lzCompress(longBuffer,4,3);
     writeln(x3);
-    y3 = cast(string) lzDeCompress!(4,3)(x3);
+    y3 = cast(string) lzDeCompress(x3);
     assert(y3 == longBuffer);
 
     //currently breaks
-    x3 = lzCompress!()(longBuffer);
+    x3 = lzCompress(longBuffer);
     writeln(x3);
-    y3 = cast(string) lzDeCompress!()(x3);
+    y3 = cast(string) lzDeCompress(x3);
     assert(y3 == longBuffer);
 }
+
+/*LZMA according to wikipedia using prefixes to optimize for different lengths/types
+  of data. Unfortunately the details on distance is lacking and this isn't dictionary 
+  based so the length and a few details are borrowed and improvised. 
+  
+  This is LZE:
+    packed code (bit sequence), packet name, packet description
+    0 + byteCode                LIT          A single byte encoded 
+    1 + len + dist              MATCH        A typical LZ77 sequence 
+
+    The length is encoded as follows:
+    Length code (bit sequence) Description
+    0+ 3 bits       The length encoded using 3 bits, gives the lengths range from 2 to 9.
+    1+0+ 3 bits     The length encoded using 3 bits, gives the lengths range from 10 to 17.
+    1+1+ 8 bits     The length encoded using 8 bits, gives the lengths range from 18 to 273.
+    
+    Distance is lacking, so we'll do our own.
+    0   +4 bits     Distance from 1-16
+    1+0 +6 bits     Distance from 17-81
+    1+1 +11 bits    Distance from 82-2130
+    
+    Minimum code is 9 bits (raw) and 10 bits (short distance/length). No special EOF's
+    to worry about.
+*/
+
+/**Partial LZMA implimentation. See notes
+   full bit uses of length/window not possible currently
+*/
+void[] lzeCompress(const void[] rawInput, int rawStart = 0) {
+    BitArray ba_data;
+    LZ lz_data = LZ(11, 8); //19 bits, rounds to 3 bytes
+    ubyte[] input = cast(ubyte[]) rawInput;
+    ubyte[] window;
+
+    ba_data.reserve(input.length * 16);
+    
+    foreach(int position; rawStart .. input.length) {
+        if (position < rawStart)
+            continue;
+
+        lz_data = windowSearch(lz_data, input, position);
+        if (lz_data.isRaw) {
+            ba_data ~= false;
+            ba_data.rawWrite(input[position]);
+            
+            debug {
+                writeln("Raw: ", input[position]);
+                writeln(ba_data);
+            }
+            continue;
+        }
+        
+        ba_data ~= true;
+        //save length
+        if (lz_data.length <= 9) {
+            ba_data ~= false;
+            ba_data.intWrite(lz_data.length, 2, 9);
+            debug { writeln("Len Mode 1: ", lz_data.length); }
+        } else if (lz_data.length <= 17) {
+            ba_data ~= true;
+            ba_data ~= false;
+            ba_data.intWrite(lz_data.length, 10, 17);
+            debug { writeln("Len Mode 2: ", lz_data.length); }
+        } else {
+            ba_data ~= true;
+            ba_data ~= true;
+            ba_data.intWrite(lz_data.length, 18, 273);
+            debug { writeln("Len Mode 3: ", lz_data.length); }
+        }
+        debug { writeln(ba_data); }
+        
+        //save distance/window offset
+        if (lz_data.windowPos <= 16) {
+            ba_data ~= false;
+            ba_data.intWrite(lz_data.windowPos, 1, 16);
+            debug { writeln("Win-Mode 1: ", lz_data.windowPos); }
+        } else if (lz_data.windowPos <= 81) {
+            ba_data ~= true;
+            ba_data ~= false;
+            ba_data.intWrite(lz_data.windowPos, 17, 81);
+            debug { writeln("Win-Mode 2: ", lz_data.windowPos); }
+        } else {
+            ba_data ~= true;
+            ba_data ~= true;
+            ba_data.intWrite(lz_data.windowPos, 82, 2130);
+            debug { writeln("Win-Mode 3: ", lz_data.windowPos); }
+        }
+        debug { writeln(ba_data); }
+
+        rawStart = position + lz_data.length;
+        lz_data.clear();
+    }
+    
+    void[] buff;
+    ba_data.getBuffer(buff);
+    return buff[0 .. ((cast(int) ba_data.length + 7) / 8)];
+}
+
+///Partial LZMA implimentation. See notes
+void[] lzeDeCompress(const void[] input) {
+    ubyte[] buffer;
+    const BitArray ba = BitArray(cast(void[]) input);
+    int window, length;
+    int offset;
+    
+    while((ba.length - offset) >= 9) {  //9 for raw, otherwise 10 bits
+        if (!ba[offset]) {
+            ubyte ub;
+            offset += ba.rawRead(ub, offset+1) + 1;
+            buffer ~= ub;
+            debug { writeln("R-Raw: ", ub); }
+        } else {
+            offset++;   //in LZ mode, no further options of interest for lze
+
+            //determine length
+            if (!ba[offset]) {      //3 bit 2-9
+                offset += ba.intRead(length, offset+1, 2, 9) + 1;
+                debug { writeln("R-Len Mode 1: ", length); }
+            } else {
+                if (!ba[offset+1]) {//3 bit 10-17
+                    offset += ba.intRead(length, offset+2, 10, 17) + 2;
+                    debug { writeln("R-Len Mode 2: ", length); }
+                } else {            //8 bit 18-273
+                    offset += ba.intRead(length, offset+2, 18, 273) + 2;
+                    debug { writeln("R-Len Mode 3: ", length); }
+                }
+            }
+            
+            //determine window position
+            if (!ba[offset]) {      //4  bit 1-16
+                offset += ba.intRead(window, offset+1, 1, 16) + 1;
+                debug { writeln("R-Win Mode 1: ", window); }
+            } else {
+                if (!ba[offset+1]) {//6  bit 17-81
+                    offset += ba.intRead(window, offset+2, 17, 81) + 2;
+                    debug { writeln("R-Win Mode 2: ", window); }
+
+                } else {            //11 bit 82-2130
+                    offset += ba.intRead(window, offset+2, 82, 2130) + 2;
+                    debug { writeln("R-Win Mode 3: ", window); }
+                }
+            }
+            
+            //overlapping copy, likely long string like "*****"
+            //can't have optimizations as they might not copy it right.screw it up.
+            if (window < length) {
+                buffer.length = buffer.length + length;
+                auto lhs = buffer[($-window-length) .. $];
+                auto rhs = buffer[$-length .. $];
+                
+                foreach(i, ref b; rhs)
+                    b = lhs[i];
+            } else
+                buffer ~= buffer[($-window) .. ($-window+length)];
+        }
+    }
+
+    return cast(void[]) buffer;
+}
+
+
+unittest {
+    writeln("LZe half");
+
+    string s = "Hello Hello";
+    //2 byte struct sequence
+    void[] x = lzeCompress(s);
+    writeln(x);
+    string y = cast(string) lzeDeCompress(x);
+    assert(y == s);
+    
+    string dups = "--------";
+    auto x3 = lzeCompress(dups);
+    writeln(x3);
+    string y3 = cast(string) lzeDeCompress(x3);
+    writeln(y3);
+    writeln(dups);
+    assert(y3 == dups);
+
+    string dups2 = "abcabcabc";
+    auto x4 = lzeCompress(dups2);
+    writeln(x4);
+    string y4 = cast(string) lzeDeCompress(x4);
+    assert(y4 == dups2);
+
+    string longBuffer = dups ~ dups ~ dups ~ dups;
+    x3 = lzeCompress(longBuffer);
+    writeln(x3);
+    y3 = cast(string) lzeDeCompress(x3);
+    assert(y3 == longBuffer);
+}
+
 
 //huffman starts here. unions/repacking may be done later.
 struct Node {
@@ -1040,4 +1254,17 @@ unittest {
     writeln(decoded);
 }
 
-void main(){}
+void main(string[] args) {
+    /*
+    //Partial implimentation when enabled. Brings own source to about 16k.
+    foreach (ubyte[] buffer; stdin.byChunk(65536)) {
+        ubyte[] raw;
+        if (args.length == 1) { //compress
+            raw = cast(ubyte[]) lzeCompress(buffer);
+        } else {
+            raw = cast(ubyte[]) lzeDeCompress(buffer);
+        }
+        stdout.rawWrite(raw);
+    }
+    */
+}
