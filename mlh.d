@@ -17,10 +17,10 @@
     //rather than hello world, forces compression. Borrowed from zlib
     string helloString = "Hello Hello";
 
-    void[] compressed = lzwCompress(helloString);
+    void[] compressed = lzCompress(helloString);
     writeln(compressed);   //raw compressed state
 
-    string uncompressed = cast(string) lzwDeCompress(compressed);
+    string uncompressed = cast(string) lzDeCompress(compressed);
     writeln(uncompressed);
 
     assert(helloString == uncompressed);
@@ -81,8 +81,16 @@ import std.conv;
 //for BitArray constants mostly
 struct LZ {
     enum windowMin = 1;
+    enum rawMin = 1;
+
+    //settings
     int windowBits = 11;
     int lengthBits = 4;
+    int rawBits = 7;
+
+    //modifyable
+    int windowPos; //going back
+    int length;
 
     ///determine max window size (behind) that it can search
     int windowMax() const pure @property @safe {
@@ -101,24 +109,24 @@ struct LZ {
         return (1 << lengthBits) + lengthMin - 1;
     }
 
-    enum rawMin = 1;    //fit in 1 byte
-    enum rawMax = 128;
-    
-    //modifyable
-    int windowPos; //going back
-    int length;
+    int rawMax() const pure @property @safe {
+        return 1 << rawBits;
+    }
     
     //any illegal data is 'raw'.
     bool isRaw() const pure @property @safe {
         return (windowPos < windowMin) || (windowPos > windowMax) ||
                 (length < lengthMin) || (length > lengthMax);
     }
+
     void clear() pure @safe{ windowPos = length = 0; }
+
     void print() {
         writeln("windowMax: ", windowMax);
         writeln("lengthMin: ", lengthMin);
         writeln("lengthMax: ", lengthMax);
         writeln("windowPos: ", windowPos);
+        writeln("rawMax: ", this.rawMax);
         writeln("length: ", length);
         writeln("isRaw: ", this.isRaw);
     }
@@ -135,14 +143,30 @@ unittest {
     assert(lz.isRaw);
     lz.length = 3;
     assert(!lz.isRaw); //should be wrong until length is 3
+
+    assert(lz.rawMax == 128);
+    lz.rawBits = 3;
+    assert(lz.rawMax == 8);
+}
+
+void[] lzCompress(const void[] rawInput,
+                int windowBits = 11, int lengthBits = 4, int rawBits = 7,
+                int maxBits = 16) {
+    return lzCompress(rawInput, null, windowBits, lengthBits, rawBits, maxBits);
 }
 
 ///
-void[] lzCompress(const void[] rawInput,
-                int windowBits = 11, int lengthBits = 4,
-                int maxBits = 16) {
+void[] lzCompress(const void[] rawInput, SwiftSearch ss,
+                int windowBits = 11, int lengthBits = 4, int rawBits = 7,
+                int maxBits = 16)
+in {
+    assert(windowBits <= maxBits, "window/distance has too many bits for signature");
+    assert(lengthBits <= maxBits, "length has too many bits for signature");
+    assert(rawBits < maxBits, "rawBits has too many bits for signature");
+}
+body {
     BitArray ba_data;
-    LZ lz_data = LZ(windowBits, lengthBits);
+    LZ lz_data = LZ(windowBits, lengthBits, rawBits);
     ubyte[] input = cast(ubyte[]) rawInput;
     ubyte[] window;
     int rawStart = 0;
@@ -152,18 +176,25 @@ void[] lzCompress(const void[] rawInput,
     //
     ba_data.intWrite(windowBits, 1, maxBits);
     ba_data.intWrite(lengthBits, 1, maxBits);
+    ba_data.intWrite(rawBits,    0, maxBits-1);
+
+    if (!ss)
+        ss = swiftSearchScan(input);
+    else
+        ss = ss.dup;    //shallow copy
     
     foreach(int position; rawStart .. input.length) {
         if (position < rawStart)
             continue;
 
-        lz_data = windowSearch(lz_data, input, position);
+        lz_data = windowSearch(lz_data, ss, input, position);
         if (lz_data.isRaw)
             continue;
         
         //uncompressed data
         bulkRawWrite(lz_data, ba_data, input[rawStart .. position]);
-        
+
+        debug { writeln("LZ: dist: ", lz_data.windowPos, ", len: ", lz_data.length); }
         //window/compressed data
         ba_data ~= false;   //prefix
         ba_data.intWrite(lz_data.windowPos, lz_data.windowMin, lz_data.windowMax);
@@ -182,28 +213,142 @@ void[] lzCompress(const void[] rawInput,
 
 //rough implimentations, scans the window area for the longest possible match
 //returns the position & length, or isRaw
-LZ windowSearch(LZ lz, const ubyte[] input, int position) {
+//minGain is how many bytes of compression so beyond the lengthMin
+T windowSearch(T)(T lz, const ubyte[] input, int position, int minGain = int.max) {
     lz.clear();
 
     foreach(i; 0 .. position) {
+        //if within window length of the search, and meets the minimum length
         if ((position-i) <= lz.windowMax && (position+lz.lengthMin) < input.length &&
                 input[i .. i+lz.lengthMin] == input[position .. position+lz.lengthMin]) {
-            LZ lzCurrent = lz;
             int length = lz.lengthMin;
-            lzCurrent.windowPos = position - i;
 
+            //continue further scan to see how long it is
+            //so long as the length doesn't exceed our max
+            while((length < lz.lengthMax) &&
+                    ((position+length) < input.length) &&
+                    (input[i+length] == input[position+length])) {
+                length++;
+            }
+
+            if (length > lz.length) {
+                lz.length = length;
+                lz.windowPos = position - i;
+            }
+        }
+
+        //early quit when successfully finds 'long enough' match
+        if ((lz.length - lz.lengthMin) >= minGain || lz.length == lz.lengthMax)
+            break;
+    }
+
+    return lz;
+}
+
+alias uint[][] SwiftSearch;
+
+//creates an array lookup of where 1-3 bytes matches are speeding up
+//basic searches for window Search if included.
+SwiftSearch swiftSearchScan(const ubyte[] input, int levels = 1) {
+    SwiftSearch ss;
+
+    assert(levels >= 1 && levels <= 3);
+    //32bit can only really handle 3 bytes, good for most matches of 3 bytes or larger needed.
+
+    ss.length = 1<<(levels * 8);
+
+    foreach(i, ub; input[0 .. $-(levels - 1)]) {
+        int val = 0;
+        auto t = input[i .. i+levels];
+        while (t.length) {
+            val <<= 8;
+            val |= t[0];
+            t = t[1 .. $];
+        }
+        ss[val] ~= i;
+    }
+
+    return ss;
+}
+
+//a bit of duplication from here with windowSearch, likely to be more.
+//Will be refactored later once I'm satisfied with a good working model
+
+//rough implimentations, scans the window area for the longest possible match
+//returns the position & length, or isRaw. dontChange is for slicing the
+//now unreachable sections, so they aren't constantly rescanned as we progress
+T windowSearch(T)(T lz, ref SwiftSearch ss, const ubyte[] input, int position, bool dontChange = false, int minGain = int.max) {
+    lz.clear();
+
+    if (!ss.length)
+        return windowSearch(lz, input, position);
+
+    uint[] scanArray;
+    int offset;
+
+    switch(ss.length) {
+        case 1<<8: offset = input[position]; break;
+        case 1<<16:
+            if ((input.length - position) < 2)
+                return lz;
+
+            offset = (input[position] << 8) |
+                    input[position + 1];
+            break;
+        case 1<<24:
+            if ((input.length - position) < 3)
+                return lz;
+            offset = (input[position] << 16) |
+                    (input[position + 1] << 8) |
+                    input[position  + 2];
+            break;
+        default:
+    }
+
+    //get the whole section matching 1-3 characters
+    scanArray = ss[offset];
+
+    debug { writeln(scanArray); }
+
+    while (scanArray.length && ((position - scanArray[0]) > lz.windowMax)) {
+        scanArray = scanArray[1 .. $];    //shorten off ones that can't qualify
+        continue;
+    }
+
+    //update to shorter array unless told otherwise
+    if (!dontChange)
+        ss[offset] = scanArray;
+
+    foreach(i; scanArray) {
+        if (i >= position)
+            break;
+
+        int minLength = lz.lengthMin;
+
+        if ((position+minLength) < input.length &&
+                input[i .. i + minLength] == input[position .. position + minLength]) {
+            int length = minLength;
+
+            //continue further scan to see how long it is
+            //so long as the length doesn't exceed our max
             while(length < lz.lengthMax &&
                     (position+length) < input.length &&
                     input[i+length] == input[position+length]) {
                 length++;
             }
-            lzCurrent.length = length;
 
-            if (lz.length < lzCurrent.length)
-                lz = lzCurrent;
+            if (length > lz.length) {
+                lz.length = length;
+                lz.windowPos = position - i;
+            }
         }
+
+        //early quit when successfully finds 'long enough' match
+        if ((lz.length - minLength) >= minGain || lz.length == lz.lengthMax)
+            break;
     }
 
+    debug { writeln("\nWindow Search: "); /*lz.print();*/ }
     return lz;
 }
 
@@ -213,17 +358,40 @@ void bulkRawWrite(LZ lz, ref BitArray ba, const(ubyte)[] input) {
     //append last unused raw
     while(input.length) {
         lz.clear();
-        lz.length = min(input.length, LZ.rawMax);
+        lz.length = min(input.length, lz.rawMax);
         ba ~= true; //prepend 'raw' bit
 
         ba.intWrite(lz.length, lz.rawMin, lz.rawMax);
+        debug { writeln("BRW - Raw: ", lz.length); }
 
         foreach(i, ub; input) {
             if (i >= lz.length)
                 break;
             ba.rawWrite(ub);
+            debug { writeln("    ", ub); }
         }
         input = input[lz.length .. $];
+    }
+}
+
+void bulkRawWrite(LZE lz, ref BitArray ba, const(ubyte)[] input) {
+    //append last unused raw
+    while(input.length) {
+        lz.raw.value = min(lz.rawMax, input.length);
+        ba ~= false; //prepend 'raw' bit
+
+        lz.raw.encode(ba);
+
+        debug { writeln("BRW (lze) - Raw: ", lz.raw.value); writeln(ba);}
+
+        foreach(i, ub; input) {
+            if (i >= lz.raw.value)
+                break;
+            ba.rawWrite(ub);
+            debug { writeln("    ", ub); }
+            debug { writeln(ba); }
+        }
+        input = input[lz.raw.value .. $];
     }
 }
 
@@ -239,8 +407,10 @@ void[] lzDeCompress(const void[] input, int maxBits = 16) {
     //16/16 limitation keeps down to 1 byte for data
     offset += ba.intRead(lz.windowBits, offset, 1, maxBits);
     offset += ba.intRead(lz.lengthBits, offset, 1, maxBits);
+    offset += ba.intRead(lz.rawBits, offset, 0, maxBits - 1);
+    int minSize = min(1 + lz.rawBits + 8, lz.windowBits + lz.lengthBits+1);
     
-    while(offset < ba.length) {
+    while((ba.length - offset) >= minSize) {
         offset += ba.rawRead(isRaw, offset);
         if (isRaw) {
             offset += ba.intRead(lz.length, offset, lz.rawMin, lz.rawMax);
@@ -290,7 +460,7 @@ unittest {
     
     string y2 = cast(string) lzDeCompress(x2);
 //    writeln(cast(string)y);
-    assert(x2.length < s.length);
+//    assert(x2.length < s.length);
     assert(y2 == s);
     
     string dups = "--------";
@@ -302,7 +472,7 @@ unittest {
     assert(y3 == dups);
 
     string dups2 = "abcabcabc";
-    auto x4 = lzCompress(dups2, 4,3);
+    auto x4 = lzCompress(dups2,4,3);
     writeln(x4);
     string y4 = cast(string) lzDeCompress(x4);
     assert(y4 == dups2);
@@ -344,122 +514,429 @@ unittest {
     to worry about.
 */
 
+/*handles encoding/decoding of prefixed values in a range.
+  This lets you put various combinations prefixes and the accumulated values
+  in order to save data better. Also will encode the data to a BitArray for you.
+*/
+struct PrefixCodes {
+    const(bool[])[] prefix;
+    const(int)[] bitSizes;
+    int rawMin; //adjusts as the min value before min/max figure it out
+    //accumulates from prevoius values. So...
+    int value;
+
+    int maxLevels() const @property pure @safe { return prefix.length; }
+
+    int minBits() const @property pure @safe {
+        int bits = int.max;
+        foreach(i, bs; bitSizes) {
+            bits = min(bits, prefix[i].length + bs);
+        }
+        return bits;
+    }
+
+    int maxBits() const @property pure @safe {
+        int bits;
+        foreach(i, bs; bitSizes) {
+            bits = max(bits, prefix[i].length + bs);
+        }
+        return bits;
+    }
+
+    static struct Calc {
+        int level, min, max;
+    }
+
+    //get encoding details based on value
+    Calc results() const pure @safe {
+        Calc val;
+
+        val.level = 0;
+        val.min = rawMin;
+        val.max = val.min + (1 << bitSizes[val.level]) - 1;
+
+        while (((val.level+1) < bitSizes.length) && ((value < val.min) || (value > val.max))) {
+            val.level++;
+            val.min = val.max + 1;
+            val.max = val.min + (1 << bitSizes[val.level]) - 1;
+        }
+
+        if (val.min > value || value > val.max)
+            val.level = -1;
+
+        return val;
+    }
+
+    //with the level known, gets details (for decoding)
+    Calc results(int levels) const pure @safe {
+        Calc val;
+
+        if (levels >= bitSizes.length)
+            return Calc(-1);
+
+        val.level = 0;
+        val.min = rawMin;
+        val.max = val.min + (1 << bitSizes[val.level]) - 1;
+
+        while (val.level < levels) {
+            val.level++;
+            val.min = val.max + 1;
+            val.max = val.min + (1 << bitSizes[val.level]) - 1;
+        }
+
+        return val;
+    }
+
+    //returns the min/max/level the level covers.
+    Calc resultsFrom(int checkValue) const pure @safe {
+        Calc val;
+
+        //check for out of range (Before the ranges)
+        if (checkValue < rawMin)
+            return Calc(-1);
+
+        val.level = 0;
+        val.min = rawMin;
+        val.max = val.min + (1 << bitSizes[val.level]) - 1;
+
+        while ((val.min > checkValue) && ((val.level + 1) < maxLevels)) {
+            val.level++;
+            val.min = val.max + 1;
+            val.max = val.min + (1 << bitSizes[val.level]) - 1;
+        }
+
+        if ((val.min > checkValue) || (val.max < checkValue))
+            return Calc(-1);
+
+        return val;
+    }
+
+    //encodes sequence to bitarray
+    int encode(ref BitArray array) const {
+        auto prevLength = array.length;
+        Calc val = results();
+        if ((val.level < 0) || (val.level >= prefix.length))
+            return 0;
+
+        array ~= prefix[val.level];
+        array.intWrite(value, val.min, val.max);
+        return cast(int) (array.length - prevLength);
+    }
+
+    //decodes sequence to value, returns bits read.
+    int decode(const BitArray array) {
+        int length;
+        foreach(i, pre; prefix) {
+            if (array[0 .. pre.length] == pre) {
+                length = pre.length;
+                auto val = results(i);
+                length += array.intRead(value, length, val.min, val.max);
+                break;
+            }
+        }
+        return length;
+    }
+
+    unittest {
+        PrefixCodes pre = PrefixCodes( [[false],[true, false],[true, true]], [2,3,4], 1);
+        //0 1-4, - 3 bits
+        //1 5-12,- 5 bits
+        //2 13-28- 6 bits
+
+        //results
+        auto c = pre.results();
+        assert(c.level == -1); //0 not valid
+
+        int i=1;
+        while(i <= 4) {
+            pre.value = i;
+            c = pre.results();
+            assert(c.level == 0);
+            assert(c.min == 1);
+            assert(c.max == 4);
+            i++;
+        }
+        while(i <= 12) {
+            pre.value = i;
+            c = pre.results();
+            assert(c.level == 1);
+            assert(c.min == 5);
+            assert(c.max == 12);
+            i++;
+        }
+        while(i <= 28) {
+            pre.value = i;
+            c = pre.results();
+            assert(c.level == 2);
+            assert(c.min == 13);
+            assert(c.max == 28);
+            i++;
+        }
+
+        pre.value = i; //32
+        c = pre.results();
+        assert(c.level == -1); //0 not valid
+
+        //results(levels)
+        c = pre.results(0);
+        assert(c.level == 0);
+        assert(c.min == 1);
+        assert(c.max == 4);
+
+        c = pre.results(1);
+        assert(c.level == 1);
+        assert(c.min == 5);
+        assert(c.max == 12);
+
+        c = pre.results(2);
+        assert(c.level == 2);
+        assert(c.min == 13);
+        assert(c.max == 28);
+
+        c = pre.results(3);
+        assert(c.level == -1); //0 not valid
+
+        //encode
+        BitArray ba;
+
+        //level 0
+        pre.value = 3;
+        bool[] answer = [0,1,0];
+        int len = pre.encode(ba);
+
+        assert(len == answer.length);
+        assert(ba == answer);
+
+        //level 1
+        ba.length = 0;
+        pre.value = 10;
+        answer = [1,0,1,0,1];
+        len = pre.encode(ba);
+
+        assert(len == answer.length);
+        assert(ba == answer);
+
+        //level 2
+        ba.length = 0;
+        pre.value = 28;
+        answer = [1,1,1,1,1,1];
+        len = pre.encode(ba);
+
+        assert(len == answer.length);
+        assert(ba == answer);
+
+        //decode
+        //level 0
+        answer = [0,1,0,  1,1,1]; //3 + added junk
+        ba = BitArray(answer);
+        len = pre.decode(ba);
+        assert(len == 3);
+        assert(pre.value == 3);
+
+        //level 1
+        answer = [1,0,1,0,1, 1,1,1]; //10 + junk
+        ba = BitArray(answer);
+        len = pre.decode(ba);
+        assert(len == 5);
+        assert(pre.value == 10);
+
+        //level 2
+        answer = [1,1,1,1,1,1, 1,1,1];//28 + junk
+        ba = BitArray(answer);
+        len = pre.decode(ba);
+
+        assert(len == 6);
+        assert(pre.value == 28);
+
+        //max bits
+        //max levels
+        assert(pre.maxBits == 6);
+        assert(pre.maxLevels == 3);
+    }
+}
+
+//lz77 implimentation. Not fully tested.
+//for BitArray constants mostly
+struct LZE {
+/*
+    static immutable bool[][] def_levelCodes = [[0,0],[0,1],[1,1],[1,0,0],[1,0,1]];
+    static immutable int[] def_lenBits = [3,3,7,11,13];
+    static immutable int[] def_distBits = [5,8,13,17,20];
+    static immutable int[] def_rawBits = [2,4,6,8,10];
+
+    PrefixCodes dist = PrefixCodes(def_levelCodes, def_distBits, 1);
+    PrefixCodes len  = PrefixCodes(def_levelCodes, def_lenBits, 4);
+    PrefixCodes raw  = PrefixCodes(def_levelCodes, def_rawBits, 1);
+*/
+    static immutable bool[][] def_levelCodes = [[0],[1,0],[1,1]];
+    static immutable int[] def_lenBits = [3,3,8];
+    static immutable int[] def_distBits = [5,8,8];
+
+    static immutable bool[][] def_rawLevelCodes = [[false],[true]];
+    static immutable int[] def_rawBits = [2,4];
+
+    PrefixCodes dist = PrefixCodes(def_levelCodes, def_distBits, 1);
+    PrefixCodes len  = PrefixCodes(def_levelCodes, def_lenBits, 4);
+    PrefixCodes raw  = PrefixCodes(def_rawLevelCodes, def_rawBits, 1);
+
+    enum windowMin = 1;
+    enum rawMin = 1;
+
+    //calculated via 'update' need to get real values for defaults.
+    int windowMax = 544;
+    int lengthMin = 4;
+    int lengthMax = 275;
+    int rawMax = 20;
+
+    int windowPos;
+    int length;
+
+    //a more accurate one since a fixed one will require 6 bytes when
+    //we know it can fit in as little as 2.
+    int getLengthMin(int dist_, int len_) const @safe pure {
+        auto distData = dist.resultsFrom(dist_);
+        auto lenData = len.resultsFrom(len_);
+
+        if ((distData.level == -1) || (lenData.level == -1))
+            return int.max; //can't satisfy...
+
+        //staircase... that was unintentional...
+        int bits = 1;
+        bits += len.prefix[distData.level].length;
+        bits += dist.prefix[distData.level].length;
+        bits += len.bitSizes[distData.level];
+        bits += dist.bitSizes[distData.level];
+
+        return ((bits + 7) / 8) + 1;
+    }
+
+    //update and adjust ints to more realistic values.
+    void update() pure @safe { //@safe pure {
+        int bits = 1;   //1 for raw/LZ
+        PrefixCodes.Calc calc;
+
+        //distance/window
+        bits += dist.maxBits;
+
+        calc = dist.results(dist.maxLevels-1);
+        windowMax = calc.max;
+
+        //length, get minimum size needed.
+        bits += len.maxBits;
+        int l = ((bits + 7) / 8) + 1;
+
+        //update length min/max
+        len.rawMin = l;     //calc.min is for that level, not lowest at level 0
+        calc = len.results(len.maxLevels-1);
+
+        lengthMin = l;
+        lengthMax = calc.max;
+
+        calc = raw.results(raw.maxLevels-1);
+        rawMax = calc.max;
+    }
+
+    //any illegal data is 'raw'.
+    bool isRaw() const @property {
+        return (windowPos < windowMin) || (windowPos > windowMax) ||
+                (length < lengthMin) || (length > lengthMax);
+    }
+
+    void clear() pure @safe { update(); windowPos = length = 0; }
+}
+
+unittest {
+    LZE lze;
+    lze.update();
+    writeln(lze);
+}
+
 /**Partial LZMA implimentation. See notes
    full bit uses of length/window not possible currently
 */
-void[] lzeCompress(const void[] rawInput, int rawStart = 0) {
+void[] lzeCompress(const void[] rawInput, int rawStart = 0, SwiftSearch ss = null, LZE lz_data = LZE.init) {
     BitArray ba_data;
-    LZ lz_data = LZ(11, 8); //19 bits, rounds to 3 bytes
+    debug {writeln("lzeCompress");}
+
     ubyte[] input = cast(ubyte[]) rawInput;
     ubyte[] window;
 
     ba_data.reserve(input.length * 16);
     
+    if (!ss.length)
+        ss = swiftSearchScan(input, 2);
+    else
+        ss = ss.dup;
+
     foreach(int position; rawStart .. input.length) {
         if (position < rawStart)
             continue;
 
-        lz_data = windowSearch(lz_data, input, position);
-        if (lz_data.isRaw) {
-            ba_data ~= false;
-            ba_data.rawWrite(input[position]);
-            
-            debug {
-                writeln("Raw: ", input[position]);
-                writeln(ba_data);
-            }
+        lz_data = windowSearch(lz_data, ss, input, position, ss.length > 65536);
+        if (lz_data.isRaw)
             continue;
-        }
-        
+
+        bulkRawWrite(lz_data, ba_data, input[rawStart .. position]);
+
         ba_data ~= true;
         //save length
-        if (lz_data.length <= 9) {
-            ba_data ~= false;
-            ba_data.intWrite(lz_data.length, 2, 9);
-            debug { writeln("Len Mode 1: ", lz_data.length); }
-        } else if (lz_data.length <= 17) {
-            ba_data ~= true;
-            ba_data ~= false;
-            ba_data.intWrite(lz_data.length, 10, 17);
-            debug { writeln("Len Mode 2: ", lz_data.length); }
-        } else {
-            ba_data ~= true;
-            ba_data ~= true;
-            ba_data.intWrite(lz_data.length, 18, 273);
-            debug { writeln("Len Mode 3: ", lz_data.length); }
+        lz_data.len.value = lz_data.length;
+        lz_data.dist.value = lz_data.windowPos;
+
+        lz_data.len.encode(ba_data);
+        lz_data.dist.encode(ba_data);
+
+        debug {
+            writeln("LZE - len: ", lz_data.length, ", dist: ", lz_data.windowPos);
+            writeln(ba_data);
         }
-        debug { writeln(ba_data); }
         
         //save distance/window offset
-        if (lz_data.windowPos <= 16) {
-            ba_data ~= false;
-            ba_data.intWrite(lz_data.windowPos, 1, 16);
-            debug { writeln("Win-Mode 1: ", lz_data.windowPos); }
-        } else if (lz_data.windowPos <= 81) {
-            ba_data ~= true;
-            ba_data ~= false;
-            ba_data.intWrite(lz_data.windowPos, 17, 81);
-            debug { writeln("Win-Mode 2: ", lz_data.windowPos); }
-        } else {
-            ba_data ~= true;
-            ba_data ~= true;
-            ba_data.intWrite(lz_data.windowPos, 82, 2130);
-            debug { writeln("Win-Mode 3: ", lz_data.windowPos); }
-        }
-        debug { writeln(ba_data); }
-
         rawStart = position + lz_data.length;
         lz_data.clear();
     }
     
+    //raw at the end to handle?
+    bulkRawWrite(lz_data, ba_data, input[rawStart .. $]);
     void[] buff;
     ba_data.getBuffer(buff);
     return buff[0 .. ((cast(int) ba_data.length + 7) / 8)];
 }
 
 ///Partial LZMA implimentation. See notes
-void[] lzeDeCompress(const void[] input) {
+void[] lzeDeCompress(const void[] input, LZE lz_data = LZE.init) {
     ubyte[] buffer;
     const BitArray ba = BitArray(cast(void[]) input);
-    int window, length;
     int offset;
+    debug {writeln("lzeDeCompress");}
     
-    while((ba.length - offset) >= 9) {  //9 for raw, otherwise 10 bits
+    while((ba.length - offset) >= (lz_data.raw.minBits + 8)) {
         if (!ba[offset]) {
+            offset++; //skip isRaw bit
+
+            offset += lz_data.raw.decode(ba[offset .. $]);
+
+            debug { writeln("LZE-Raw: ", lz_data.raw.value);
+                    writeln(ba[offset .. $]);}
+
             ubyte ub;
-            offset += ba.rawRead(ub, offset+1) + 1;
-            buffer ~= ub;
-            debug { writeln("R-Raw: ", ub); }
-        } else {
-            offset++;   //in LZ mode, no further options of interest for lze
-
-            //determine length
-            if (!ba[offset]) {      //3 bit 2-9
-                offset += ba.intRead(length, offset+1, 2, 9) + 1;
-                debug { writeln("R-Len Mode 1: ", length); }
-            } else {
-                if (!ba[offset+1]) {//3 bit 10-17
-                    offset += ba.intRead(length, offset+2, 10, 17) + 2;
-                    debug { writeln("R-Len Mode 2: ", length); }
-                } else {            //8 bit 18-273
-                    offset += ba.intRead(length, offset+2, 18, 273) + 2;
-                    debug { writeln("R-Len Mode 3: ", length); }
-                }
+            for(; lz_data.raw.value; lz_data.raw.value--) {
+                offset += ba.rawRead(ub, offset);
+                buffer ~= ub;
+                debug { writeln("Raw: ", ub);
+                        writeln(ba[offset .. $]);}
             }
-            
-            //determine window position
-            if (!ba[offset]) {      //4  bit 1-16
-                offset += ba.intRead(window, offset+1, 1, 16) + 1;
-                debug { writeln("R-Win Mode 1: ", window); }
-            } else {
-                if (!ba[offset+1]) {//6  bit 17-81
-                    offset += ba.intRead(window, offset+2, 17, 81) + 2;
-                    debug { writeln("R-Win Mode 2: ", window); }
+        } else {
+            offset++; //skip isRaw bit
 
-                } else {            //11 bit 82-2130
-                    offset += ba.intRead(window, offset+2, 82, 2130) + 2;
-                    debug { writeln("R-Win Mode 3: ", window); }
-                }
+            offset += lz_data.len.decode(ba[offset .. $]);
+            offset += lz_data.dist.decode(ba[offset .. $]);
+            int length = lz_data.len.value;
+            int window = lz_data.dist.value;
+            
+            debug {
+                writeln("LZE - len: ", length, ", dist: ", window);
+                writeln(ba[offset .. $]);
             }
             
             //overlapping copy, likely long string like "*****"
@@ -507,6 +984,8 @@ unittest {
     string longBuffer = dups ~ dups ~ dups ~ dups;
     x3 = lzeCompress(longBuffer);
     writeln(x3);
+    //broken only due to minimum size of 6 which is wrong,
+    //incomplete re-working in progress
     y3 = cast(string) lzeDeCompress(x3);
     assert(y3 == longBuffer);
 }
@@ -1254,17 +1733,216 @@ unittest {
     writeln(decoded);
 }
 
-void main(string[] args) {
-    /*
-    //Partial implimentation when enabled. Brings own source to about 16k.
-    foreach (ubyte[] buffer; stdin.byChunk(65536)) {
-        ubyte[] raw;
-        if (args.length == 1) { //compress
-            raw = cast(ubyte[]) lzeCompress(buffer);
-        } else {
-            raw = cast(ubyte[]) lzeDeCompress(buffer);
+int main(string[] args) {
+//partial implimentation to allow you to use the algorithmns and test them with io
+//disabled for statistical half
+/+
+    if (args.length == 1) {
+        writeln("Usage: Algo [Decode]\nanything in a second argument is 'decode'");
+        return 0;
+    }
+
+    ubyte[] raw;
+    foreach (ubyte[] buffer; stdin.byChunk(2<<20)) { //1 meg should be plenty for size
+        if (args[1] == "LZB") {
+            if (args.length == 2) { //compress
+                raw = buffer;
+                auto ss = swiftSearchScan(buffer);
+                for(int d = 1; d<=16; d++) {
+                    for(int l = 1; l<=16; l++) {
+                        for(int r=0; r <=8; r++) {
+                            auto tmp = cast(ubyte[]) lzCompress(buffer, ss, d, l, r);
+                            if (tmp.length < raw.length)
+                                raw = tmp;
+                            //length first so we can sort it usefully
+                            stderr.writeln(tmp.length, " - LZB (",d+l+1," bits) - Distance: ", d, ", Length: ", l, ", RawBits: ", r, (raw.length == tmp.length) ? "  *" : "");
+                        }
+                    }
+                }
+            } else
+                raw = cast(ubyte[]) lzDeCompress(buffer);
+        }
+        if (args[1] == "LZ") {  //default 11/4
+            if (args.length == 2) //compress
+                raw = cast(ubyte[]) lzCompress(buffer);
+            else
+                raw = cast(ubyte[]) lzDeCompress(buffer);
+        } else if (args[1] == "LZE") {
+            //Partial implimentation when enabled. Brings own source to about 16k.
+            if (args.length == 2) //compress
+                raw = cast(ubyte[]) lzeCompress(buffer);
+            else
+                raw = cast(ubyte[]) lzeDeCompress(buffer);
+        } else if (args[1] == "LZEB") {
+            //Brute force, output is useless and can'te be decompressed.
+            //however it can be studied for results.
+                auto ss1 = swiftSearchScan(buffer, 2);
+//                auto ss2 = swiftSearchScan(buffer, 3);
+                raw = buffer;
+                bool firstUse = true;
+
+                for(int len1  = 8;  len1 >= 1;      len1--)
+                for(int len2  = 8;  len2 >= len1;   len2--)
+                for(int len3  = 8;  len3 >= len2;   len3--)
+                for(int dist1 = 8; dist1 >= 1;     dist1--)
+                for(int dist2 = 10; dist2 >= dist1; dist2--)
+                for(int dist3 = 20; dist3 >= dist2; dist3--)
+                for(int raw1  = 4;  raw1 >= 1;      raw1--)
+                for(int raw2  = 4;  raw2 >= raw1;   raw2--) {
+                //to set in case got inturrupted.
+                    if (firstUse && args.length == 10) {
+                        firstUse = false;
+                        len1 = to!int(args[2]);
+                        len2 = to!int(args[3]);
+                        len3 = to!int(args[4]);
+                        dist1 = to!int(args[5]);
+                        dist2 = to!int(args[6]);
+                        dist3 = to!int(args[7]);
+                        raw1 = to!int(args[8]);
+                        raw2 = to!int(args[9]);
+/*                        writeln(len1);
+                        writeln(raw2);
+                        LZE lze2;
+                        lze2.len.bitSizes = [len1, len2, len3];
+                        lze2.dist.bitSizes = [dist1, dist2, dist3];
+                        lze2.raw.bitSizes = [raw1,raw2];
+                        lze2.update();
+
+                        writeln(lze2.len.rawMin);
+                        */
+                    }
+
+                    LZE lze;
+                    lze.len.bitSizes = [len1, len2, len3];
+                    lze.dist.bitSizes = [dist1, dist2, dist3];
+                    lze.raw.bitSizes = [raw1,raw2];
+
+                    lze.update();
+                    //two byte minimum required
+                    if (lze.len.rawMin < 2)
+                        continue;
+
+                    ubyte[] tmp;
+
+  /*                  if (lze.len.rawMin > 2)
+                        tmp = cast(ubyte[]) lzeCompress(buffer, 0, ss2, lze);
+                    else*/
+                        tmp = cast(ubyte[]) lzeCompress(buffer, 0, ss1, lze);
+
+                    if (tmp.length < raw.length)
+                        raw = tmp;
+                    //length first so we can sort it usefully
+                    stderr.writefln("%d (%.2f:1) LZEB - Lengths: %d, %d, %d - Distances: %d, %d, %d - RawBits: %d, %d", tmp.length,
+                            (cast(double) buffer.length) / tmp.length,
+                            len1, len2, len3,
+                            dist1, dist2, dist3,
+                            raw1, raw2);
+
+//                    auto t2 = cast(ubyte[]) lzeDeCompress(tmp, lze);
+
+//                    writeln(buffer);
+//                    writeln(t2);
+//                    assert(t2 == buffer);
+                }
+/*
+            } else
+                assert(0, "Cannot decode, brute force left no decoding data behind");
+                */
+                raw = null;
+        } else if (args[1] == "HUFF") {
+            BitArray compressed;
+            if (args.length == 2) { //compress
+                auto huffCode = huffmanScan(buffer, 0);
+                makeBitCodes(huffCode);
+                mlhWrite(compressed, huffCode);
+                mlhCompress(compressed, huffCode, buffer, 0);  //compress data
+                compressed.getBuffer(raw);
+            } else {
+                compressed = BitArray(cast(void[]) buffer);
+                int offset;
+                auto huffCode = mlhRead(compressed, offset);
+                auto compressedData = compressed[offset .. $];
+                raw = cast(ubyte[]) mlhDecompress(huffCode, compressedData);
+            }
+        } else if (args[1] == "MLH") {
+            assert(0, "Not implimented");
+        } else if (args[1] == "MLH2") {
+            assert(0, "Not implimented");
         }
         stdout.rawWrite(raw);
     }
-    */
+    +/
+
+    //for LZE brute forcing smaller portions for notes.
+    ubyte[] buffer = cast(ubyte[]) stdin.byChunk(2<<20).front;
+
+    auto ss1 = swiftSearchScan(buffer, 2);
+//                auto ss2 = swiftSearchScan(buffer, 3);
+    bool firstUse = true;
+
+    int len1, len2, len3;
+    int dist1, dist2, dist3;
+    int raw1, raw2;
+    LZE lze;
+    ubyte[] tmp;
+    bool[][] prefixes = [[0],[1,0],[1,1]];
+
+    lze.len.prefix = prefixes;
+    lze.dist.prefix = prefixes;
+    lze.raw.prefix = prefixes;
+
+    dist3 = dist2 = dist1 = 20;
+    raw1 = raw2 = 1;
+    for(len1  = 20;  len1 >= 1;      len1--)
+    for(len2  = 20;  len2 >= len1;   len2--)
+    for(len3  = 20;  len3 >= len2;   len3--) {
+        lze.len.bitSizes = [len1, len2, len3];
+        lze.dist.bitSizes = [dist1, dist2, dist3];
+        lze.raw.bitSizes = [raw1,raw2];
+        lze.update();
+
+        tmp = cast(ubyte[]) lzeCompress(buffer, 0, ss1, lze);
+
+        //length first so we can sort it usefully
+        writefln("%d (%.2f:1) LZEB - Lengths: %d, %d, %d", tmp.length,
+                (cast(double) buffer.length) / tmp.length,
+                len1, len2, len3);
+    }
+
+    len3 = len2 = len1 = 20;
+    raw1 = raw2 = 1;
+    for(dist1  = 20;  dist1 >= 1;      dist1--)
+    for(dist2  = 20;  dist2 >= dist1;   dist2--)
+    for(dist3  = 20;  dist3 >= dist2;   dist3--) {
+        lze.len.bitSizes = [len1, len2, len3];
+        lze.dist.bitSizes = [dist1, dist2, dist3];
+        lze.raw.bitSizes = [raw1,raw2];
+        lze.update();
+
+        tmp = cast(ubyte[]) lzeCompress(buffer, 0, ss1, lze);
+
+        //length first so we can sort it usefully
+        writefln("%d (%.2f:1) LZEB - Dist: %d, %d, %d", tmp.length,
+                (cast(double) buffer.length) / tmp.length,
+                dist1, dist2, dist3);
+    }
+
+    dist3 = dist2 = dist1 = 1;
+    len3 = len2 = len1 = 1;
+    for(raw1  = 20;  raw1 >= 1;      raw1--)
+    for(raw2  = 20;  raw2 >= len1;   raw2--) {
+        lze.len.bitSizes = [len1, len2, len3];
+        lze.dist.bitSizes = [dist1, dist2, dist3];
+        lze.raw.bitSizes = [raw1,raw2];
+        lze.update();
+
+        tmp = cast(ubyte[]) lzeCompress(buffer, 0, ss1, lze);
+
+        //length first so we can sort it usefully
+        writefln("%d (%.2f:1) LZEB - raw: %d, %d", tmp.length,
+                (cast(double) buffer.length) / tmp.length,
+                raw1, raw2);
+    }
+
+    return 0;
 }
