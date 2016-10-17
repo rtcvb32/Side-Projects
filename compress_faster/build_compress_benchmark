@@ -1,0 +1,23 @@
+#!/bin/bash
+dmc -o -c compress.c compress_reduced.c
+mv compress.obj compress_orig.obj
+dmd compress.d compress_min.d -c -O -noboundscheck -inline
+dmd benchmarking.d compress.obj compress_min.obj compress_orig.obj compress_reduced.obj -O -release -g -inline -noboundscheck
+
+echo "small plaintext (english)" >bench.txt
+nice -20 ./benchmarking.exe 0 small.txt >>bench.txt
+nice -20 ./benchmarking.exe 1 small.txt >>bench.txt
+nice -20 ./benchmarking.exe 2 small.txt >>bench.txt
+nice -20 ./benchmarking.exe 3 small.txt >>bench.txt
+echo "repetative sample aka s.s.s.s(result)" >>bench.txt
+nice -20 ./benchmarking.exe 0 >>bench.txt
+nice -20 ./benchmarking.exe 1 >>bench.txt
+nice -20 ./benchmarking.exe 2 >>bench.txt
+nice -20 ./benchmarking.exe 3 >>bench.txt
+echo "source code (wideint.d)" >>bench.txt
+nice -20 ./benchmarking.exe 0 wideint.d 100 >>bench.txt
+nice -20 ./benchmarking.exe 1 wideint.d 100 >>bench.txt
+nice -20 ./benchmarking.exe 2 wideint.d 100 >>bench.txt
+nice -20 ./benchmarking.exe 3 wideint.d 100 >>bench.txt
+
+cat bench.txt

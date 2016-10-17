@@ -1,0 +1,1 @@
+Anyone want to make a stab at making it faster? Changing the format is fair game, as well as down and dirty assembler if that's what it takes.
