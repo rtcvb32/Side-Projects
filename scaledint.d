@@ -276,6 +276,11 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
     bool opEquals(size_t rhs) const @safe pure @nogc nothrow {
         return opEquals(UScaledInt(rhs));
     }
+
+    bool opEquals(T)(T rhs) const @safe pure @nogc nothrow
+    if (isIntegral!T) {
+        return opEquals(UScaledInt(rhs));
+    }
     
     bool opEquals(const UScaledInt rhs) const @safe pure @nogc nothrow {
         return val[] == rhs.val[];
@@ -466,11 +471,14 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                 if (i == 0) {
                     //simple division, no guesswork
                     //call the simpler separated one once
+                    r.val[1 .. $] = 0;
                     div_asm_small(n.val[], divisor, q.val[], r.val[0]);
                 } else {
                     UScaledInt quotent_t;
-                    UScaledInt!(Bits*2) mult_temp;      //x2 type because it can and will overflow
-                    UScaledInt!(Bits*2) n2 = n.val[];   //upscale because it's easier that way
+                    //recalculating to ensure we actually get double or this might fail. 200+200=400 bits,
+                    //on 32bit you'd get 416 while 64 you'd get 448. Might just force everything be multiple of 64.
+                    UScaledInt!(Size*2*Int.sizeof*8) mult_temp;      //x2 type because it can and will overflow
+                    UScaledInt!(Size*2*Int.sizeof*8) n2 = n.val[];   //upscale because it's easier that way
                     bool dividend_sign = true;
                     int reduceby = bitsUsed(divisor);
                     alias dividend = r;
@@ -835,6 +843,13 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
         return this != UScaledInt.init;
     }
     
+    T opCast(T)()
+    if (is(T == ScaledInt!Bits)) {
+        ScaledInt!Bits t;
+        t.val = this.val;
+        return t;
+    }
+    
     /*
     //forcibly up/downcast
     T opCast(T)()
@@ -902,8 +917,8 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                 return str[i .. $].dup;
             }
         }
-        
-        return "0"; //if we got to this point, probably empty
+
+        assert(false);  //shouldn't get here.
     }
 }
 
@@ -912,21 +927,46 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
 //getting a failure due to asm precense in code...
 //    enum min = UScaledInt!Bits(1)<<(Bits-1);
 //    enum max = min + 1;
+    enum Size = calcSizeFromBits(Bits);
     private UScaledInt!Bits _val;
     alias _val this;
 
    //force a larger type if needed
-    this(T)(T i)
+    this(T)(T i) pure @nogc nothrow 
     if (isIntegral!T) {
         _val = UScaledInt!Bits(i);
     }
 
-    this(string i) {
+    this(string i) @nogc nothrow {
         _val = UScaledInt!Bits(i);
     }
     
-    this(const void[] i) {
+    /*
+    this(const void[] i) pure @nogc nothrow {
         _val = UScaledInt!Bits(i);
+    }
+    */
+
+    bool opEquals(T)(T rhs) const @safe pure
+    if (isIntegral!T) {
+        return _val.opEquals(ScaledInt!Bits(rhs));
+    }
+    
+    bool opEquals(UScaledInt!Bits rhs) const @safe pure {
+        //either highest bit is on, they can't be equal
+        if (_val.getSign() || rhs.getSign())
+            return false;
+        
+        return _val.val[] == rhs.val[];
+    }
+    
+    bool opEquals(ScaledInt rhs) const @safe pure {
+        return _val.val[] == rhs._val.val[];
+    }
+    
+    int opCmp(T)(T rhs) const @safe pure
+    if (isIntegral!T) {
+        return opCmp(ScaledInt(rhs));
     }
     
     int opCmp(const UScaledInt!Bits rhs) const @safe pure {
@@ -937,13 +977,13 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
     }
     
     int opCmp(const ScaledInt rhs) const @safe pure {
-        int signs = (getSign ? 2 : 0) | (rhs.getSign ? 1 : 0);
+        int signs = (_val.getSign ? 2 : 0) | (rhs.getSign ? 1 : 0);
         
         switch(signs) {
-            case 0: return opCmp(rhs);
+            case 3:// return rhs._val.opCmp(_val);
+            case 0: return _val.opCmp(rhs._val);
             case 1: return 1;
             case 2: return -1;
-            case 3: return rhs._val.opCmp(_val);
             
             default:
                 assert(false);
@@ -953,26 +993,28 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
     // >>
     ScaledInt opBinary(string op)(int shiftby) const pure
     if (op == ">>") {
-        return _val.opBinary!">>"(shiftby, -1);
+        return cast(ScaledInt!Bits) _val.opBinary!">>"(shiftby, -1);
     }
     
     ref ScaledInt opOpAssign(string op)(int shiftby) const pure
     if (op == ">>") {
-        return _val.opOpAssign!">>"(shiftby, -1);
+        _val.opOpAssign!">>"(shiftby, -1);
+        return this;
     }
     
-    // *
-    // /
+    // *, %, /
     ScaledInt opBinary(string op, T)(T rhs) const pure
-    if ((op == "*" || op == "/") && (is(T == ScaledInt!Bits) || is(T == UScaledInt!Bits))) {
+    if ((op == "*" || op == "/" || op == "%") &&
+            (is(T == ScaledInt!Bits) || is(T == UScaledInt!Bits))) {
         ScaledInt t = this;
         mixin("t"~op~"=rhs;");
         return t;
     }
     
-    ref ScaledInt opOpAssign(string op)(int shiftby) pure
-    if ((op == "*" || op == "/") && (is(T == ScaledInt!Bits) || is(T == UScaledInt))) {
-        static if (is(T == ScaledInt!Bits)) {
+    ref ScaledInt opOpAssign(string op, T)(T rhs) pure
+    if ((op == "*" || op == "/" || op == "%") &&
+            (is(T == ScaledInt) || is(T == UScaledInt!Bits))) {
+        static if (is(T == ScaledInt)) {
             int signs = (getSign ? 2 : 0) | (rhs.getSign ? 1 : 0);
         } else {
             int signs = (getSign ? 2 : 0);
@@ -984,14 +1026,16 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
         static if (is(T == ScaledInt!Bits)) {
             if (signs & 1)
                 rhs.applyNeg();
+            mixin("_val "~op~"= rhs._val;");
+        } else {
+            mixin("_val "~op~"= rhs;");
         }
-        
-        mixin("_val "~op~"= rhs._val;");
         
         switch(signs) {
             //if mixed result is negative
             case 1:
             case 2: applyNeg();
+                    goto case 3;    //yes fallthrough is desired
             //if both are signed/unsigned then it's positive
             case 3:
             case 0: break;
@@ -1003,7 +1047,23 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
         return this;
     }
     
-    string toString() {
+    //forward functions while keeping type for return
+    ref ScaledInt opOpAssign(string op, T)(T rhs) pure
+    if ((op == "&" || op == "|" || op == "^" || op == "<<") && 
+        (is(T == ScaledInt) || is(T == UScaledInt!Bits) || is(T==int))) {
+        mixin("_val"~op~"=rhs;");
+        return this;
+    }
+    
+    ScaledInt opBinary(string op, T)(T rhs) const pure
+    if ((op == "&" || op == "|" || op == "^" || op == "<<") && 
+        (is(T == ScaledInt) || is(T == UScaledInt!Bits) || is(T==int))) {
+        ScaledInt tmp;
+        mixin("tmp._val = this._val"~op~"rhs;");
+        return tmp;
+    }
+    
+    string toString() const pure {
         return _val.toString(true);
     }
 }
@@ -1168,6 +1228,36 @@ unittest {
     assert(orig.opBinary!">>"(68, 0xffffffff) == sh68r_b);
 }
 
+// & | ^
+unittest {
+    UCent orig = UCent([0xFEDCBA987654321UL, 0xFEDCBA987654321UL]),
+           rhs = UCent([0x123456789ABCDEFL, 0x55555555_55555555L]),
+           expected;
+    Cent corig = cast(Cent) orig,
+         crhs = cast(Cent) rhs;
+//           cexpected;
+    
+    expected.val[] = orig.val[] & rhs.val[];
+//    cexpected._val.val[] = expected.val[];
+    assert((orig & rhs) == expected);
+    assert((corig & rhs) == expected);
+    assert((orig & crhs) == expected);
+    assert((corig & crhs) == expected);
+
+    expected.val[] = orig.val[] | rhs.val[];
+    assert((orig | rhs) == expected);
+    assert((corig | rhs) == expected);
+    assert((orig | crhs) == expected);
+    assert((corig | crhs) == expected);
+
+    expected.val[] = orig.val[] ^ rhs.val[];
+    assert((orig ^ rhs) == expected);
+    assert((corig ^ rhs) == expected);
+    assert((orig ^ crhs) == expected);
+    assert((corig ^ crhs) == expected);
+    
+}
+
 //  *
 unittest {
     UCent orig = UCent(0xFEDCBA987654321UL);
@@ -1249,10 +1339,10 @@ unittest {
     //with multiply & add working, string assignment will work.
     
     //can't seem to get opEqual to work with these...
-//    assert(UCent("81985529216486895") == 81985529216486895L);
+    assert(UCent("81985529216486895") == 81985529216486895L);
     assert(UCent("81985529216486895") == UCent([0x123456789ABCDEFL]));
     assert(UCent("-81985529216486895") == (UCent() - 81985529216486895));
-//    assert(UCent("-81985529216486895") == -81985529216486895L);
+    assert(UCent("-81985529216486895") == -81985529216486895L);
 }
 
 // neg, applyNeg
@@ -1281,6 +1371,16 @@ unittest {
     assert(x == UCent([0xffffffff_ffffffffL, 0x7fffffff_ffffffffL]));
 }
 
+// tostring
+unittest {
+    UCent t = -1;
+    t >>= 1;
+    
+    assert(t.toString() == "170141183460469231731687303715884105727");
+    assert((-t).toString(true) == "-170141183460469231731687303715884105727");
+    assert(UCent().toString() == "0");
+}
+
 //  /
 unittest {
     //division, the one part that sucks more than the rest. Oh well.
@@ -1298,6 +1398,7 @@ unittest {
     UCent fact34 = factorial(34);
     UCent fact21 = factorial(21);
     
+    //values confirmed using bc
     assert(fact21.toString == "51090942171709440000");
     assert(fact34.toString == "295232799039604140847618609643520000000", fact34.toString);
     
@@ -1307,6 +1408,110 @@ unittest {
     ++fact21;   //so we force a remainder.
     assert((fact34 / fact21).toString == "5778574175582207999");
     assert((fact34 % fact21).toString == "45312367996127232001");
+    
+    //unique case for div_asm_small never gets called, need to ensure it does when a single small value is present.
+    
+    UCent sm = 31415;
+    assert((fact21 / sm).toString == "1626323163193042");
+    assert((fact21 % sm).toString == "25571");
+}
+
+//signed specific tests
+//assignments
+unittest {
+    assert(Cent(100).toString == "100");
+    assert(Cent(-100).toString == "-100");
+    assert(Cent("-100").toString == "-100");
+//    assert(Cent([100,0]).toString == "100");  //not sure
+}
+
+//opcmp & opEquals
+unittest {
+    UCent upos = 10, upos2 = 200, uneg = -100;
+    Cent  spos = 100, spos2 = 1000,
+          sneg = -100, sneg2 = -1000;
+    
+    //check immediates
+    assert(spos < 1000);
+    assert(sneg2 > -2000);
+    assert(spos == 100);
+    assert(sneg == -100);
+    //non-mixed Cents
+    assert(spos < spos2);
+    assert(sneg > sneg2);
+    assert(sneg < spos);
+    assert(spos == spos);
+    assert(spos != spos2);
+    
+    //mixed same signs
+    assert(spos > upos);
+    assert(spos < upos2);
+    assert(spos != upos);
+    assert(spos == UCent(100));
+    
+    //mixed with neg/high
+    assert(sneg < upos);
+    assert(sneg < uneg);
+    assert(spos < uneg);
+    assert(sneg != uneg);
+    assert(sneg != upos);
+    
+    //rhs neg left positive hasn't been tested yet
+    assert(spos > sneg);
+}
+
+//ensure >> works right
+unittest {
+    Cent v = -100;
+    
+    assert(v == -100);
+    assert(v>>3 == -13);
+    //all other tests already done earlier
+}
+
+
+// * & /
+unittest {
+    ScaledInt!160 fact21 = "51090942171709440000",
+         fact34 = "295232799039604140847618609643520000000";
+    UScaledInt!160 ufact21 = "51090942171709440000";
+    
+    ++fact21;   //so we force a remainder.
+    ++ufact21;
+    
+    assert((fact34 / fact21).toString == "5778574175582207999");
+    assert((fact34 % fact21).toString == "45312367996127232001");
+    
+    fact21.applyNeg;
+    
+    assert((fact34 / fact21).toString == "-5778574175582207999");
+    assert((fact34 % fact21).toString == "-45312367996127232001");
+    
+    fact34.applyNeg;
+    
+    assert((fact34 / fact21).toString == "5778574175582207999");
+    assert((fact34 % fact21).toString == "45312367996127232001");
+
+    fact21.applyNeg;
+
+    assert((fact34 / fact21).toString == "-5778574175582207999");
+    assert((fact34 % fact21).toString == "-45312367996127232001");
+    
+
+    //make sure mixed signs work.
+    assert((fact34 / ufact21).toString == "-5778574175582207999");
+    assert((fact34 % ufact21).toString == "-45312367996127232001");
+    
+    fact34.applyNeg;
+    
+    assert((fact34 / ufact21).toString == "5778574175582207999");
+    assert((fact34 % ufact21).toString == "45312367996127232001");
+    
+    ufact21.applyNeg;   //unsigned still positive, so it will be way too big.
+
+    assert(ufact21 > fact34);
+    assert((fact34 / ufact21).toString == "0");
+    assert((fact34 % ufact21) == fact34);
 }
 
 debug {
