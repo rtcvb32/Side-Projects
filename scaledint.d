@@ -447,14 +447,17 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                     sub [@DI], @AX;" ~ translate_cnt("
                     mov @AX, [@SI+#];
                     sbb [@DI+#], @AX;", Size, Int.sizeof, 1) ~ translate_cnt("
+                    jnc skip;
                     sbb ^ [@DI+#], 0;", Size*2, Int.sizeof, Size) ~ "
+            skip:;");
             
+            mixin(x);
+        }
     } else {
-        //these 
-        auto mul(UScaledInt rhs) const pure @safe @nogc nothrow {
-            uint[Size*2] n;
         static void mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster=true) pure @safe @nogc nothrow {
             assert(res.length == Size*2);
+            assert(lhs.length == Size);
+            assert(rhs.length == Size);
 
             //need some shifts
             ulong t;
@@ -472,13 +475,50 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                     c = t >> 32;
                 }
             }
+        }
         
+        auto mul(UScaledInt rhs) const pure @safe @nogc nothrow {
+            uint[Size*2] n = void;
             
+            mul(n[], this.val[], rhs.val[]);
             return n;
         }
         
+        static void sub(Int[] lhs, const Int[] rhs) pure @nogc nothrow {
             assert(lhs.length == Size*2);
+            assert(rhs.length == Size);
+            
             long t;    //temporary, doubles as carry
+            foreach(i, ref v; lhs[0 .. Size]) {
+                t += v;
+                t -= rhs[i];
+                v = cast(Int) t;
+                //reset carry, will be 33rd bit
+                t >>= Int.sizeof*8;
+            }
+            
+            if (t)
+                foreach(ref v; lhs[Size .. $]) {
+                    --v;
+                    if (v != -1)
+                        break;
+                }
+        }
+        
+        static void div_small(const Int[] n, Int d, Int[] result, ref Int remainder) pure @safe nothrow {
+            assert(n.length <= result.length);
+            ulong val;
+            
+            foreach_reverse(i, v; n) {
+                val |= v;
+                Int t = cast(Int) (val / d);
+                result[i] = t;
+                val -= t * d;
+                val <<= 32;
+            }
+            
+            remainder = val >> 32;
+        }
     }
     
 
@@ -510,6 +550,7 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                 r.val[1 .. $] = 0;
                 divcall(n.val[], divisor, q.val[], r.val[0]);
             } else {
+                UScaledInt quotent_t;
                 Int[Size*2] mult_temp = void;
                 bool dividend_sign = true;
                 int reduceby = bitsUsed(divisor);
@@ -1446,7 +1487,7 @@ unittest {
     UCent upos = 10, upos2 = 200, uneg = -100;
     Cent  spos = 100, spos2 = 1000,
           sneg = -100, sneg2 = -1000;
-    
+
     //check immediates
     assert(spos < 1000);
     assert(sneg2 > -2000);
@@ -1491,7 +1532,7 @@ unittest {
     ScaledInt!160 fact21 = "51090942171709440000",
          fact34 = "295232799039604140847618609643520000000";
     UScaledInt!160 ufact21 = "51090942171709440000";
-
+    
     ++fact21;   //so we force a remainder.
     ++ufact21;
     
