@@ -184,50 +184,50 @@ version(Intel) {
         
         mixin(x);
     }
-
-    //determines how many you can shift/lower the data in order to fit the max number of bits in a single block
-    //intended for division to lower how many times it needs to be calculated and be faster overall
-    int bitsUsed(T)(T val) pure @safe
-    if (isUnsigned!T) {
-        T mask = -1;
-        int total=T.sizeof*8, bits=T.sizeof*8;
-        
-        if (!val)
-            return 0;
-        
-        do {
-            bits >>= 1;
-            mask <<= bits;
-            
-            if (!(val & mask)) {
-                total -= bits;
-                val <<= bits;
-            }
-
-        } while (bits);
-        return total;
-    }
-
-    unittest {
-        assert(bitsUsed!uint(0) == 0);
-        assert(bitsUsed!uint(1) == 1);
-        assert(bitsUsed!uint(5) == 3);
-        assert(bitsUsed!uint(100) == 7);
-        assert(bitsUsed!uint(0xffffff) == 24);
-        assert(bitsUsed!uint(0x800000) == 24);
-        assert(bitsUsed!uint(0x700000) == 23);
-        assert(bitsUsed!uint(-1) == 32);
-
-        assert(bitsUsed!ulong(0) == 0);
-        assert(bitsUsed!ulong(1) == 1);
-        assert(bitsUsed!ulong(5) == 3);
-        assert(bitsUsed!ulong(100) == 7);
-        assert(bitsUsed!ulong(0xffffff) == 24);
-        assert(bitsUsed!ulong(0x800000) == 24);
-        assert(bitsUsed!ulong(0x700000) == 23);
-        assert(bitsUsed!ulong(-1) == 64);
-    }
 }
+//determines how many you can shift/lower the data in order to fit the max number of bits in a single block
+//intended for division to lower how many times it needs to be calculated and be faster overall
+int bitsUsed(T)(T val) pure @safe
+if (isUnsigned!T) {
+    T mask = -1;
+    int total=T.sizeof*8, bits=T.sizeof*8;
+    
+    if (!val)
+        return 0;
+    
+    do {
+        bits >>= 1;
+        mask <<= bits;
+        
+        if (!(val & mask)) {
+            total -= bits;
+            val <<= bits;
+        }
+
+    } while (bits);
+    return total;
+}
+
+unittest {
+    assert(bitsUsed!uint(0) == 0);
+    assert(bitsUsed!uint(1) == 1);
+    assert(bitsUsed!uint(5) == 3);
+    assert(bitsUsed!uint(100) == 7);
+    assert(bitsUsed!uint(0xffffff) == 24);
+    assert(bitsUsed!uint(0x800000) == 24);
+    assert(bitsUsed!uint(0x700000) == 23);
+    assert(bitsUsed!uint(-1) == 32);
+
+    assert(bitsUsed!ulong(0) == 0);
+    assert(bitsUsed!ulong(1) == 1);
+    assert(bitsUsed!ulong(5) == 3);
+    assert(bitsUsed!ulong(100) == 7);
+    assert(bitsUsed!ulong(0xffffff) == 24);
+    assert(bitsUsed!ulong(0x800000) == 24);
+    assert(bitsUsed!ulong(0x700000) == 23);
+    assert(bitsUsed!ulong(-1) == 64);
+}
+
 
 struct UScaledInt(int Bits)
 if (Bits > 1) {    //the 128 limit due to loop opcode
@@ -427,34 +427,61 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
     version(Intel) {
         auto mul(UScaledInt rhs) const pure @nogc nothrow {
             //UScaledInt!(Bits*2) n;
-            Int[Size*2] n;    //raw type, otherwise this breaks (infinite template instantiation).
+            Int[Size*2] n = void;    //raw type, otherwise this breaks (infinite template instantiation).
             mul_asm(n, val[], rhs.val[]);
             return n;
         }
+
+        //for div
+        static void sub(Int[] lhs, const Int[] rhs) pure @nogc nothrow {
+            assert(lhs.length == Size*2);
+            assert(rhs.length == Size);
+            
+            auto l = lhs.ptr,
+                 r = rhs.ptr;
+            
+            enum x = translate("
+                    mov @SI, r;
+                    mov @DI, l;
+                    mov @AX, [@SI];
+                    sub [@DI], @AX;" ~ translate_cnt("
+                    mov @AX, [@SI+#];
+                    sbb [@DI+#], @AX;", Size, Int.sizeof, 1) ~ translate_cnt("
+                    sbb ^ [@DI+#], 0;", Size*2, Int.sizeof, Size) ~ "
+            
     } else {
         //these 
         auto mul(UScaledInt rhs) const pure @safe @nogc nothrow {
             uint[Size*2] n;
+        static void mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster=true) pure @safe @nogc nothrow {
+            assert(res.length == Size*2);
+
             //need some shifts
             ulong t;
             uint c;
             
-            foreach(i, l; rhs.val) {
+            res[]=0;
+            
+            foreach(i, l; rhs) {
                 if (!l)
                     continue;
                 t=c=0;
-                foreach(i2, r; val) {
-                    t = (cast(ulong)l * r) + c + n[i+i2];
-                    n[i+i2] = cast(uint) t;
+                foreach(i2, r; lhs[0 .. $]) { // faster ? lhs[0 .. $-i] :
+                    t = (cast(ulong)l * r) + c + res[i+i2];
+                    res[i+i2] = cast(uint) t;
                     c = t >> 32;
                 }
             }
+        
             
             return n;
         }
+        
+            assert(lhs.length == Size*2);
+            long t;    //temporary, doubles as carry
     }
     
-    version(Intel) {
+
 /*  Perhaps the hardest part of this whole thing is the following function. Watched a video on a simple
     arbitrary division using only the most significant digit, which then collapses easily enough with
     div_asm_small where a number of passes are done each getting closer to the goal, taking the difference
@@ -462,102 +489,78 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
     
     One key diference is i shift the divisor and dividend to fill a full 32/64 bit block first, my tests
     showed it went from 8 passes to 2. */
-        static void div()(const UScaledInt n, UScaledInt d, ref UScaledInt q, ref UScaledInt r) pure @nogc {
-            assert(d, "Divide by zero");
-            foreach_reverse(i, divisor; d.val) {
-                if (!divisor)
-                    continue;
-            //find most significant to divide by.
-                if (i == 0) {
-                    //simple division, no guesswork
-                    //call the simpler separated one once
-                    r.val[1 .. $] = 0;
-                    div_asm_small(n.val[], divisor, q.val[], r.val[0]);
-                } else {
-                    UScaledInt quotent_t;
-                    //recalculating to ensure we actually get double or this might fail. 200+200=400 bits,
-                    //on 32bit you'd get 416 while 64 you'd get 448. Might just force everything be multiple of 64.
-                    UScaledInt!(Size*2*Int.sizeof*8) mult_temp;      //x2 type because it can and will overflow
-                    UScaledInt!(Size*2*Int.sizeof*8) n2 = n.val[];   //upscale because it's easier that way
-                    bool dividend_sign = true;
-                    int reduceby = bitsUsed(divisor);
-                    alias dividend = r;
-                    q = UScaledInt();
-                    dividend = n;
-                    
-                    if (reduceby < (Int.sizeof*8)) {
-                        --i;
-                        divisor = (d>>reduceby).val[i];   //new divisor, should be fully filled
-                    }
-                    
-                    do {
-                        if (reduceby < (Int.sizeof*8))
-                            dividend >>= reduceby;
-                    
-                        //divide
-                        div_asm_small(dividend.val[i .. $], divisor, quotent_t.val[], mult_temp.val[0]); //remainder is junk
-
-                        //add/sub to our current total
-                        if (dividend_sign)
-                            q += quotent_t;
-                        else
-                            q -= quotent_t;
-
-                        //multiply
-                        mul_asm(mult_temp.val, q.val[], d.val[], false);
-                        
-                        //subtract the difference
-                        mult_temp -= n2;
-
-                        dividend_sign = mult_temp.getSign();   //quick dirty check
-                        
-                        if (dividend_sign) {
-                            dividend = -cast(UScaledInt) mult_temp.val[0 .. Size];
-                        } else
-                            dividend = cast(UScaledInt) mult_temp.val[0 .. Size];
-                            
-                    } while(dividend > d);
-                    
-                    //handle remainder
-                    //handle off by one?
-                    if (!dividend_sign) {
-                        q -= 1;
-                        r = d - dividend;
-                    }
-                    
-                    break;
-                }
-            }
+    static void div(const UScaledInt n, UScaledInt d, ref UScaledInt q, ref UScaledInt r) pure @nogc {
+        assert(d, "Divide by zero");
+        
+        version(Intel) {
+            alias divcall = div_asm_small;
+            alias mulcall = mul_asm;
+        } else {
+            alias divcall = UScaledInt.div_small;
+            alias mulcall = mul;
         }
-    } else {
-        //backup divide method using shift and subtract
-        static void div(UScaledInt lhs, UScaledInt rhs, ref UScaledInt result, out UScaledInt remainder) pure @safe {
-            UScaledInt mask = 1;
-            result.val[] = 0;
-            
-            assert(rhs, "Divide by Zero");    //not zero
-            
-            //grow/shift
-            while (!rhs.val[$-1] && lhs > rhs) {
-                rhs <<= Int.sizeof*8;
-                mask <<= Int.sizeof*8;
-            }
-            
-            while (!rhs.getSign && lhs > rhs) {
-                rhs <<= 1;
-                mask <<= 1;
-            }
-            
-            while(mask) {
-                if (lhs >= rhs) {
-                    lhs -= rhs;
-                    result |= mask;
+        
+        foreach_reverse(i, divisor; d.val) {
+            if (!divisor)
+                continue;
+        //find most significant to divide by.
+            if (i == 0) {
+                //simple division, no guesswork
+                //call the simpler separated one once
+                r.val[1 .. $] = 0;
+                divcall(n.val[], divisor, q.val[], r.val[0]);
+            } else {
+                Int[Size*2] mult_temp = void;
+                bool dividend_sign = true;
+                int reduceby = bitsUsed(divisor);
+                alias dividend = r;
+                q = UScaledInt();
+                dividend = n;
+                
+                if (reduceby < (Int.sizeof*8)) {
+                    --i;
+                    divisor = (d>>reduceby).val[i];   //new divisor, should be fully filled
                 }
-                mask >>= 1;
-                rhs >>= 1;
+                
+                do {
+                    if (reduceby < (Int.sizeof*8))
+                        dividend >>= reduceby;
+                
+                    //divide
+                    divcall(dividend.val[i .. $], divisor, quotent_t.val[], mult_temp[0]); //remainder is junk
+
+                    //add/sub to our current total
+                    if (dividend_sign)
+                        q += quotent_t;
+                    else
+                        q -= quotent_t;
+
+                    //multiply
+                    mulcall(mult_temp, q.val[], d.val[], false);
+                    
+                    //subtract the difference
+                    //mult_temp -= n2;
+                    
+                    UScaledInt.sub(mult_temp[], n.val[]);
+
+                    dividend_sign = mult_temp[$-1] == -1;   //quick dirty check
+                    
+                    if (dividend_sign) {
+                        dividend = -cast(UScaledInt) mult_temp[0 .. Size];
+                    } else
+                        dividend = cast(UScaledInt) mult_temp[0 .. Size];
+                        
+                } while(dividend > d);
+                
+                //handle remainder
+                //handle off by one?
+                if (!dividend_sign) {
+                    q -= 1;
+                    r = d - dividend;
+                }
+                
+                break;
             }
-            
-            remainder = lhs;
         }
     }
     
@@ -876,16 +879,13 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
             version(X86_64) {
                 enum Digits = 18;
             }
-            enum DigitsMod = 10L^^Digits;
-            Int tmod;
         } else {
-            //can't optimize, but since we have longs, may as well use them
-            enum Digits = 18;
-            enum DigitsMod = UScaledInt([cast(uint) (10L^^Digits), (10L^^Digits)>>32]);
-            ulong tmod;
+            enum Digits = 9;
         }
-        
+        enum DigitsMod = 10L^^Digits;
         UScaledInt tmp = this;
+        Int tmod;
+        
         if (honorSign && getSign)
             tmp.applyNeg;
         
@@ -897,10 +897,7 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                 version(Intel) {
                     div_asm_small(tmp.val, DigitsMod, t.val, tmod);
                 } else {
-                    UScaledInt rem = void;
-                    
-                    div(tmp, DigitsMod, t, rem);
-                    tmod = (cast(ulong) rem.val[1] << 32) | rem.val[0];
+                    UScaledInt.div_small(tmp.val, DigitsMod, t.val, tmod);
                 }
                 tmp = t;
             }
@@ -912,7 +909,6 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
                     --i;
                     str[i] = '-';
                 }
-                
             
                 return str[i .. $].dup;
             }
@@ -942,6 +938,7 @@ if (Bits > 1) {    //the 128 limit due to loop opcode
     }
     
     /*
+    //not working...
     this(const void[] i) pure @nogc nothrow {
         _val = UScaledInt!Bits(i);
     }
@@ -1371,6 +1368,25 @@ unittest {
     assert(x == UCent([0xffffffff_ffffffffL, 0x7fffffff_ffffffffL]));
 }
 
+//div_small div_asm_small
+//this is needed for toString and other division based on it to work.
+unittest {
+    UCent fact21 = "51090942171709440001",
+            d_res = "1626323163193042", res;
+    Int remainder;
+    
+    version(Intel) {
+        alias dv = div_asm_small;
+    } else {
+        alias dv = UCent.div_small;
+    }
+    
+    dv(fact21.val, 31415, res.val[], remainder);
+    
+    assert(remainder == 25571);
+    assert(res == d_res);
+}
+
 // tostring
 unittest {
     UCent t = -1;
@@ -1475,7 +1491,7 @@ unittest {
     ScaledInt!160 fact21 = "51090942171709440000",
          fact34 = "295232799039604140847618609643520000000";
     UScaledInt!160 ufact21 = "51090942171709440000";
-    
+
     ++fact21;   //so we force a remainder.
     ++ufact21;
     
@@ -1534,7 +1550,7 @@ debug {
             return total;
         }
     
-        writeln("Time to show off! Factorial 1-98!\tFact!N\tbits\tResults");
+        writeln("Time to show off! Factorial 1-98!\nFact!N\tbits\tResults");
         UScaledInt!512 f = 1;
         foreach(i; 1 .. 99) {
             f *= i;
