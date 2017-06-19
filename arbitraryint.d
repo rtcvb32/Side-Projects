@@ -26,6 +26,12 @@ struct ArbitraryInt(int NumBits, bool Signed) {
     enum IsSigned = Signed;
     private Int[Size] val;
     
+    static if (IsSigned) {
+        static immutable ArbitraryInt max = ArbitraryInt(-1) >>> 1, min = max+1;
+    }else{
+        static immutable ArbitraryInt max = ArbitraryInt(-1), min;
+    }
+    
     this(T)(T v) 
     if(isIntegral!T) {
         if(isSigned!T && v < 0)
@@ -96,7 +102,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
      * Params:
      *    other = The other value, can be integral or an ArbitraryInt
      */
-    ArbitraryInt opBinary(string op, T)(auto ref const(T) other) {
+    ArbitraryInt opBinary(string op, T)(auto ref const(T) other) const {
         ArbitraryInt result = this;
 
         static if ((op == "/" || op == "%") && (IsSigned || T.IsSigned)) {
@@ -148,11 +154,25 @@ struct ArbitraryInt(int NumBits, bool Signed) {
                 Int[Size*2+1] m_tmp = void;
                 result.val[] = 0;
                 result.val[0] = 1;
+
+                static if (IsSigned) {
+                    bool isneg = getSign(this.val);
+                    ArbitraryInt tmp_this = this;
+                    if (isneg)
+                        neg(tmp_this.val);
+                } else {
+                    enum isneg = false;
+                    alias tmp_this = this;
+                }
                 
                 foreach(i; 0 .. other) {
-                    mul(m_tmp, result.val, this.val, false);
+                    mul(m_tmp, result.val, tmp_this.val, false);
                     assert(m_tmp[$-1] == 0, "Power result too large to be useful on this size of Arbitrary Int");
                     result.val[] = m_tmp[0 .. Size];
+                }
+                
+                if (isneg) {
+                    neg(result.val);
                 }
             } else {
                 assert(false, "Operation "~op~" Not implimented");
@@ -206,7 +226,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
      * Params:
      *    other = is a Integral type.
      */    
-    ArbitraryInt opBinaryRight(string op, T)(const(T) other)
+    ArbitraryInt opBinaryRight(string op, T)(const(T) other) const
     if (isIntegral!T) {
         ArbitraryInt result = void;
         Int[Size*2] buff = void;
@@ -241,7 +261,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
     /**
      * either invert all the bits, or is a negative (two's compliment) of the number
      */
-    ArbitraryInt opUnary(string op)()
+    ArbitraryInt opUnary(string op)() const
     if (op == "-" || op == "~") {
         ArbitraryInt t;
 
@@ -265,7 +285,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
      * Params:
      *    other = The other value, can be integral or an ArbitraryInt
      */    
-    int opCmp(T)(auto ref const(T) other) 
+    int opCmp(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
         int signFlags;
         static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
@@ -285,7 +305,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
         }
     }
     
-    bool opEquals(T)(auto ref const(T) other)
+    bool opEquals(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
         int signFlags;
         static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
@@ -611,21 +631,23 @@ private {
     //multiply. length of result has to be as big as the lhs+rhs lengths.
     //faster means be less precise, and only return the length that the lhs gives, at which point
     //the lhs has to be as big if not bigger than the rhs.
-    Int[] mul(return Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) @safe pure @nogc nothrow {
+    Int[] mul(return Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pure @nogc nothrow {
         assert(isUnsigned!Int);
         assert(res.length >= lhs.length + rhs.length);
 
         res[0 .. (faster ? lhs.length : $)] = 0;
         
         if (!__ctfe) {
-            version(none){ //breaks test, fix later
-                foreach(i, rhs_v; cast(Int[]) rhs) {
+            version(X86) {
+                foreach(i, rhs_v; cast(Int[]) rhs) { //cast only, otherwise: integer constant expression expected instead
                     if (!rhs_v)
                         continue;
                     //s & p pointers to get proper location
-                    auto s = &lhs[0];
+                    const(Int)* s = &lhs[0];
                     Int* p = &res[i];
-                    Int cnt = faster ? lhs.length - i : lhs.length;
+                    int cnt = faster ? lhs.length - i : lhs.length;
+                    if (cnt <= 0)
+                        break;
 
                     asm pure nothrow @nogc {
                             mov ESI, s;
@@ -633,23 +655,23 @@ private {
                             mov EDI, p;
                     start:  mov EAX, rhs_v;
                             mul dword ptr [ESI];
-                    //?AX:?DX has the result
+                    //EAX:EDX has the result
                             add [EDI], EAX;
                             adc [EDI + 4], EDX;
                     //manage carry, if applicable
                             jnc nocarry;
-                            push EDI;
+                            mov EAX, EDI;   //EAX, EBX and EDX are free now. Avoids extra memory access.
                     carry:  add EDI, 4;
                             add dword ptr [EDI + 4], 1;
                             jc carry;
-                            pop EDI;
+                            mov EDI, EAX;
                     //advance
                     nocarry:add EDI, 4;
                             add ESI, 4;
                             loop start;
                     }
-                    return res;
                 }
+                return faster ? res[0 .. lhs.length]: res;
             }
         }
         
@@ -896,6 +918,9 @@ private {
                 dividend[] = n[];
                 q[] = 0;
                 
+                //removes custom reduceby, for speed testing
+                debug(NoDivReduce) { reduceby = 0; }
+                
                 //new divisor, should be fully filled
                 if (reduceby)
                     divisor = (rshift(mult_temp[0 .. d.length], d, reduceby)[--i]);
@@ -1043,6 +1068,8 @@ unittest {
     
     c = Cent(-100);
     assert(c.toString == "-100");
+    assert(Cent("-100").toString == "-100");
+    assert(Cent("-0xff").toString == "-255");
     
     // & | ^
     assert((Cent("0x0123456789abcdef") & Cent("0x1122334455667788")) == Cent("0x0122014401224588"));
@@ -1068,6 +1095,8 @@ unittest {
     assert((Cent(-100) >> 2).toString == "-25");
     assert((Cent(-100) >>> 2).toString == "85070591730234615865843651857942052839");
     assert((Cent(3) ^^ 80).toString == "147808829414345923316083210206383297601");
+    assert((Cent(-3) ^^ 80).toString == "-147808829414345923316083210206383297601");
+    assert((UCent(3) ^^ 80).toString == "147808829414345923316083210206383297601"); //just tests the alternate/unsigned path
     
     //binaryRight
     assert((100 + Cent(50)).toString == "150");
