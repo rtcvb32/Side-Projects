@@ -4,7 +4,7 @@
  * Authors:
  *    Era Scarecrow <rtcvb32@yahoo.com>
  */
-module arbitraryint;
+module std.experimental.arbitraryint;
 
 import std.conv;
 import std.traits;
@@ -14,14 +14,11 @@ alias UCent = ArbitraryInt!(128, false);
 /// Signed cent implimentation
 alias Cent = ArbitraryInt!(128, true);
 
-//internal type, should be largest type we can work with while still doing division/multiplication 
-alias Int = uint;
-
 /// Returns if the template is an ArbitraryInt type
 enum isArbitraryInt(T) = is(T == ArbitraryInt!(size, flag), size_t size, bool flag);
 
 /// Is a ....
-struct ArbitraryInt(int NumBits, bool Signed) {
+struct ArbitraryInt(size_t NumBits, bool Signed) {
     enum Size = NumBits / (Int.sizeof*8);
     enum IsSigned = Signed;
     private Int[Size] val;
@@ -285,7 +282,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
      * Params:
      *    other = The other value, can be integral or an ArbitraryInt
      */    
-    int opCmp(T)(auto ref const(T) other) const
+    Size_t opCmp(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
         int signFlags;
         static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
@@ -360,16 +357,27 @@ struct ArbitraryInt(int NumBits, bool Signed) {
         return t;
     }
 
+    //for _toString
+    private enum Digits = 9;
     
+    /// Returns a string base10 representation of the ArbritraryInt
+    string toString() const pure nothrow {
+        char[Digits * (val.sizeof+1)] str;
+        return _toString(str).dup;
+    }
+    
+    /// a non-GC variant
+    void toString(scope void delegate (const(char)[]) dg) const {
+        char[Digits * (val.sizeof+1)] str;
+        dg(_toString(str));
+    }
     
     /** creates a string of base10 to represent the number
       * seeing as division is expensive, it's far faster to grab a bunch of digits and use a cheaper divides
       * every 32bit block can hold 9 digits and 64bit can hold 18 digits, makes a mighty simple algorighm then
       */
-    string toString() const pure {
-        enum Digits = 9;
+    private char[] _toString(return char[] str) const pure nothrow @nogc {
         enum DigitsMod = 10L^^Digits;
-        char[Digits * (val.sizeof+1)] str;
         ArbitraryInt tmp = this;
         Int tmod;
         
@@ -393,7 +401,7 @@ struct ArbitraryInt(int NumBits, bool Signed) {
                     str[i] = '-';
                 }
             
-                return str[i .. $].dup;
+                return str[i .. $];
             }
         }
 
@@ -403,11 +411,15 @@ struct ArbitraryInt(int NumBits, bool Signed) {
 
 private {
     pragma(inline, true):
-
+    
+    //internal type, should be largest type we can work with while still doing division/multiplication 
+    alias Int = uint;
+    alias Size_t = Signed!size_t;
+    
     //how many bits used from lower to higher.
-    int bitsUsed(Int val) pure @safe @nogc nothrow {
+    size_t bitsUsed(Int val) pure @safe @nogc nothrow {
         Int mask = -1;
-        int total = Int.sizeof*8, bits = Int.sizeof*8;
+        size_t total = Int.sizeof*8, bits = Int.sizeof*8;
         
         if (!val)
             return 0;
@@ -438,7 +450,7 @@ private {
 
     //basic comparison, any two lengths you want.
     //the larger length of the two is always larger (after reduction).
-    int cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
+    Size_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
         //reduce
         while(lhs.length && !lhs[$-1])
             lhs = lhs[0 .. $-1];
@@ -639,6 +651,7 @@ private {
         
         if (!__ctfe) {
             version(X86) {
+            version(DigitalMars) {
                 foreach(i, rhs_v; cast(Int[]) rhs) { //cast only, otherwise: integer constant expression expected instead
                     if (!rhs_v)
                         continue;
@@ -672,6 +685,7 @@ private {
                     }
                 }
                 return faster ? res[0 .. lhs.length]: res;
+            }
             }
         }
         
@@ -742,6 +756,7 @@ private {
         
         if (!__ctfe) {
             version(X86){
+            version(DigitalMars){
                 Int *dividend = cast(Int *) n.ptr;
                 Int *quotent = result.ptr;
                 Int len = n.length;
@@ -768,6 +783,7 @@ private {
                 }
 
                 return r;
+            }
             }
         }
 
@@ -805,7 +821,7 @@ private {
         }
     }
     
-    Int[] lshift(return Int[] result, const Int[] value, int shiftby) pure @safe @nogc nothrow {
+    Int[] lshift(return Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
         assert(result.length == value.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
         enum uint32 = uint.sizeof*8;
@@ -813,7 +829,7 @@ private {
             version(none){}
         }
 
-        int skip = shiftby / uint32;    //how many whole blocks to move by
+        size_t skip = shiftby / uint32;    //how many whole blocks to move by
         shiftby -= skip * uint32;
         ulong t;
 
@@ -831,7 +847,7 @@ private {
         return result;
     }
 
-    Int[] rshift(return Int[] result, const Int[] value, int shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
+    Int[] rshift(return Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
         assert(value.length == result.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
         enum uint32 = uint.sizeof*8;
@@ -839,13 +855,13 @@ private {
             version(none){}
         }
 
-        int skip = shiftby / uint32;    //how many whole blocks to move by
+        size_t skip = shiftby / uint32;    //how many whole blocks to move by
         shiftby -= skip * uint32;
 
         if (!shiftby)
             result[0 .. $-skip] = value[skip .. $];
         else {
-            int left = uint32 - shiftby;
+            size_t left = uint32 - shiftby;
             ulong t = setcarry ? -1L << (left+uint32) : 0;
             foreach_reverse(i, ref v; result[0 .. $-skip]) {
                 t |= (cast(ulong)value[i+skip]) << left;
@@ -913,7 +929,7 @@ private {
                 Int[] quotent_t = buff[0 .. n.length];
                 Int[] mult_temp = buff[n.length .. $];
                 bool dividend_sign = true;
-                int reduceby = bitsUsed(divisor), Size = n.length;
+                size_t reduceby = bitsUsed(divisor), Size = n.length;
                 alias dividend = r;
                 dividend[] = n[];
                 q[] = 0;
