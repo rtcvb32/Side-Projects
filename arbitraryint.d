@@ -376,7 +376,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
       * seeing as division is expensive, it's far faster to grab a bunch of digits and use a cheaper divides
       * every 32bit block can hold 9 digits and 64bit can hold 18 digits, makes a mighty simple algorighm then
       */
-    private char[] _toString(return char[] str) const pure nothrow @nogc {
+    private char[] _toString(char[] str) const pure nothrow @nogc {
         enum DigitsMod = 10L^^Digits;
         ArbitraryInt tmp = this;
         Int tmod;
@@ -501,7 +501,7 @@ private {
     }
     
     //add any int array to another int array. rhs is truncated to the result/left side.
-    Int[] add(return Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
+    Int[] add(Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
         long t;    //temporary, doubles as carry
         
         if (rhs.length > lhs.length)
@@ -527,7 +527,7 @@ private {
     }
 
     //aubtract any int array to another int array. rhs is truncated to the result/left side.
-    Int[] sub(return Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
+    Int[] sub(Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
         long t;    //temporary, doubles as carry
         
         if (rhs.length > lhs.length)
@@ -614,7 +614,7 @@ private {
         assert(sub(lhs, [1]) == [-1, -1, -1]);
     }
     
-    Int[] inc(return Int[] val) pure @safe @nogc nothrow {
+    Int[] inc(Int[] val) pure @safe @nogc nothrow {
         foreach(ref v; val) {
             ++v;
             if (v)
@@ -623,7 +623,7 @@ private {
         return val;
     }
     
-    Int[] dec(return Int[] val) pure @safe @nogc nothrow {
+    Int[] dec(Int[] val) pure @safe @nogc nothrow {
         foreach(ref v; val) {
             --v;
             if (v != -1)
@@ -643,7 +643,7 @@ private {
     //multiply. length of result has to be as big as the lhs+rhs lengths.
     //faster means be less precise, and only return the length that the lhs gives, at which point
     //the lhs has to be as big if not bigger than the rhs.
-    Int[] mul(return Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pure @nogc nothrow {
+    Int[] mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pure @nogc nothrow {
         assert(isUnsigned!Int);
         assert(res.length >= lhs.length + rhs.length);
 
@@ -821,7 +821,7 @@ private {
         }
     }
     
-    Int[] lshift(return Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
+    Int[] lshift(Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
         assert(result.length == value.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
         enum uint32 = uint.sizeof*8;
@@ -847,7 +847,7 @@ private {
         return result;
     }
 
-    Int[] rshift(return Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
+    Int[] rshift(Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
         assert(value.length == result.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
         enum uint32 = uint.sizeof*8;
@@ -1046,7 +1046,7 @@ private {
     }
 
     //return/apply 2's compliment
-    Int[] neg(return Int[] n) @safe pure nothrow @nogc {
+    Int[] neg(Int[] n) @safe pure nothrow @nogc {
         n[] = ~n[];
         return inc(n);
     }
