@@ -172,7 +172,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                     neg(result.val);
                 }
             } else {
-                assert(false, "Operation "~op~" Not implimented");
+                static assert(false, "Operation "~op~" Not implimented");
             }
             
             return result;
@@ -208,7 +208,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 enum Dollar = min(Size, T.Size);
                 mixin("result.val[0 .. Dollar] = this.val[0 .. Dollar] "~op~" other.val[0 .. Dollar];");
             } else {
-                assert(false, "Operation "~op~" Not implimented");
+                static assert(false, "Operation "~op~" Not implimented");
             }
 
             return result;
@@ -242,14 +242,14 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             result.val[] = buff[0 .. Size];
         } else static if (op == "/") {
             //going all out extra isn't worth it, just forward to opBinary
-            return ArbitraryInt(other) / this;
+            result = ArbitraryInt(other) / this;
         } else static if (op == "%") {
-            return ArbitraryInt(other) % this;
+            result = ArbitraryInt(other) % this;
         } else static if (op == "&" || op == "|" || op == "^") {
             mixin("result.val[0] "~op~"= other;");
         //unique int rhs only.
         } else {
-            assert(false, "Operation "~op~" Not implimented");
+            static assert(false, "Operation "~op~" Not implimented");
         }
         
         return result;
