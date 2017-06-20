@@ -539,6 +539,11 @@ private {
             v = cast(Int) t;
             //reset carry
             t >>= Int.sizeof*8;
+            version(GDC) {
+            //gdc pre 6.3 - sar/shr workaround
+                if (t)
+                    t |= 0xffffffff_00000000L;
+            }
         }
         
         //carry leftover? Adjust accordingly
