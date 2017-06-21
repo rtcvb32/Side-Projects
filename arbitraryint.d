@@ -17,7 +17,10 @@ alias Cent = ArbitraryInt!(128, true);
 /// Returns if the template is an ArbitraryInt type
 enum isArbitraryInt(T) = is(T == ArbitraryInt!(size, flag), size_t size, bool flag);
 
-/// Is a ....
+/**
+  *  Template for Arbitrary Int. Creates a simulated/emulated byte as long as it's multiple of 64 bits
+  *
+  */
 struct ArbitraryInt(size_t NumBits, bool Signed) {
     static assert((NumBits % 64) == 0, "Must be a multiple of 64bits");
     enum Size = NumBits / (Int.sizeof*8);
@@ -30,6 +33,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         static immutable ArbitraryInt max = ArbitraryInt(-1), min;
     }
     
+    ///set using basic Integral type
     this(T)(T v) 
     if(isIntegral!T) {
         if(isSigned!T && v < 0)
@@ -64,6 +68,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         }
     }
     
+    ///Use base10 or base16 to set the value
     this(string v) {
         import std.ascii;
         Int[Size*2] mult_tmp = void;
@@ -94,7 +99,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             }
             
             assert(a[0] >= 0, "Bad input string");
-            assert(a[0] < mult[0]);
+            assert(a[0] < mult[0], "Exceeds selected base10/base16 type");
             mul(mult_tmp, t.val, mult);
             t.val[] = mult_tmp[0 .. Size];
             add(t.val, a);
@@ -190,7 +195,8 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             
             return result;
         } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
-            //convert and perform peration.
+            //convert and perform peration. As it's larger than Int/type internally we spuport
+            //it's easier to just forward it.
             mixin ("return this "~op~" ArbitraryInt!(NumBits, isSigned!T)(cast(T) other);");
         } else static if (isArbitraryInt!T) {
             static if (op == "+") {
@@ -261,6 +267,9 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         return t;
      }
      
+    /**
+     * forwards any and all operations from opBinary to opOpAssign
+     */
     ref ArbitraryInt opOpAssign(string op, T)(auto ref const(T) other) {
         mixin("this = this "~op~" other;");
         return this;
@@ -295,6 +304,12 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         }
     }
     
+    /**
+     * simple compare if identical or not, considers signed-ness
+     *
+     * Params:
+     *    other = The other value, can be integral or an ArbitraryInt
+     */
     bool opEquals(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
         int signFlags;
@@ -421,6 +436,11 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     }
 }
 
+/*  Internal functions, unlimited add/sub/inc/dec/rshift/lshift/cmp/icmp/div_small_div/mul on one or two arrays
+
+    For simplicity, it's little endian in structure. So [0] is the lowest value and [$-1] has the highest value.
+    All functions use array slices.
+*/
 private {
 //    pragma(inline, true): //causing LDC to barf, "can't be always inline & not inline at the same time".
     
@@ -439,7 +459,7 @@ private {
         enum UseAsm = true;
     }
     
-    //how many bits used from lower to higher.
+    //how many bits used from lower to higher. So 0x5 would return 3, while 0xff would be 8, and 0x100 is 9. etc.
     size_t bitsUsed(Int val) pure @safe @nogc nothrow {
         Int mask = -1;
         size_t total = Int.sizeof*8, bits = Int.sizeof*8;
@@ -533,9 +553,6 @@ private {
         Int[4] buff;
         Int[] small = buff[0 .. 2], large=buff[2 .. $];
         
-        //l & l2 at the same level, g on a different 'greater' level.
-        //only test first two levels, on a 64bit machine there might only be 2 levels.
-        
         //identical size, larger later elements
         small[] = [100, 100];
         large[] = [100, 101];
@@ -565,8 +582,7 @@ private {
         //test sufficiently large comparison
         assert(cmp([0xDA444D2C],[0x2]) > 0);
 
-//        static assert(0, "write tests for icmp, then incorporate into opCmp");
-        
+        //icmp specific tests
         assert(icmp([100, 50], [100, -50]) > 0);
         assert(icmp([100, -50], [100, 50]) < 0);
 
@@ -629,7 +645,7 @@ private {
             //reset carry
             t >>= Int.sizeof*8;
             version(GNU) {
-            //gdc pre 6.3 - sar/shr workaround
+            //gdc workaround - https://github.com/D-Programming-GDC/GDC/pull/501
                 if (t)
                     t |= 0xffffffff_00000000L;
             }
@@ -1006,6 +1022,7 @@ private {
         }
     }
     
+    //left shift the value into the result. Value & result can be the same array.
     Int[] lshift(Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
         assert(result.length == value.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
@@ -1032,6 +1049,7 @@ private {
         return result;
     }
 
+    //right shift the value into the result.  Value & result can be the same array.
     Int[] rshift(Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
         assert(value.length == result.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
@@ -1097,8 +1115,11 @@ private {
     and adjusting the next pass.
     
     One key diference is i shift the divisor and dividend to fill a full 32/64 bit block first, my tests
-    showed it went from 8 passes to 2. */
-    void div(Int[] buff, const Int[] n, const Int[] d, Int[] q, Int[] r) {
+    showed it went from 8 passes to 2.
+    
+    the buff must be at least 3 times larger than the n value, for temporaries. This avoids the gc
+    */
+    void div(Int[] buff, const Int[] n, const Int[] d, Int[] q, Int[] r) pure @nogc nothrow {
         assert(d, "Divide by zero");
         
         foreach_reverse(i, Int divisor; d) {
@@ -1167,6 +1188,7 @@ private {
             }
         }
         
+        //out(void) not an option, so this is an extra check confirming d*q+r = n
         debug {
             assert(cmp(r, null) >= 0);
             assert(cmp(r, d) < 0);
@@ -1210,7 +1232,7 @@ private {
         assert(r == [0x59765F5, 0, 0, 0]);
     }
 
-    //assumed signed
+    //assumed signed, returns the highest bit of the last element
     bool getSign(const Int[] n) @safe pure nothrow @nogc {
         return cast(bool) (n[$-1] & (1 << (Int.sizeof*8-1)));
     }
