@@ -272,7 +272,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      * Params:
      *    other = The other value, can be integral or an ArbitraryInt
      */    
-    Size_t opCmp(T)(auto ref const(T) other) const
+    ptrdiff_t opCmp(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
         int signFlags;
         static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
@@ -439,8 +439,6 @@ private {
         enum UseAsm = true;
     }
     
-    alias Size_t = Signed!size_t;
-    
     //how many bits used from lower to higher.
     size_t bitsUsed(Int val) pure @safe @nogc nothrow {
         Int mask = -1;
@@ -474,7 +472,7 @@ private {
     }
 
     //like cmp, only reduces both signed flags before considering comparing.
-    Size_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
+    ptrdiff_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
         int signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
 
         if (signFlags == 2) return -1;
@@ -510,7 +508,7 @@ private {
 
     //basic comparison, any two lengths you want.
     //the larger length of the two is always larger (after reduction).
-    Size_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
+    ptrdiff_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
         //reduce
         while(lhs.length && !lhs[$-1])
             lhs = lhs[0 .. $-1];
