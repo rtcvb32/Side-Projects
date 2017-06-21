@@ -19,6 +19,7 @@ enum isArbitraryInt(T) = is(T == ArbitraryInt!(size, flag), size_t size, bool fl
 
 /// Is a ....
 struct ArbitraryInt(size_t NumBits, bool Signed) {
+    static assert((NumBits % 64) == 0, "Must be a multiple of 64bits");
     enum Size = NumBits / (Int.sizeof*8);
     enum IsSigned = Signed;
     private Int[Size] val;
@@ -421,10 +422,23 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
 }
 
 private {
-    pragma(inline, true):
+//    pragma(inline, true): //causing LDC to barf, "can't be always inline & not inline at the same time".
     
-    //internal type, should be largest type we can work with while still doing division/multiplication 
-    alias Int = uint;
+    //internal type, should be second largest type we can work with
+    //so uint if we can work with longs, and longs if we can work with cent
+    version(none) {
+        alias Int = ulong;
+    } else {
+        alias Int = uint;
+    }
+    
+    //forcibly turns off ASM coding.
+    debug(NoAsm) {
+        enum UseAsm = false;
+    } else {
+        enum UseAsm = true;
+    }
+    
     alias Size_t = Signed!size_t;
     
     //how many bits used from lower to higher.
@@ -603,7 +617,7 @@ private {
         return lhs;
     }
 
-    //aubtract any int array to another int array. rhs is truncated to the result/left side.
+    //subtract any int array to another int array. rhs is truncated to the result/left side.
     Int[] sub(Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
         long t;    //temporary, doubles as carry
         
@@ -731,9 +745,8 @@ private {
 
         res[0 .. (faster ? lhs.length : $)] = 0;
         
-        if (!__ctfe) {
-            version(X86) {
-            version(DigitalMars) {
+        if (!__ctfe && UseAsm) {
+            version(D_InlineAsm_X86) {
                 foreach(i, rhs_v; cast(Int[]) rhs) { //cast only, otherwise: integer constant expression expected instead
                     if (!rhs_v)
                         continue;
@@ -836,9 +849,8 @@ private {
         assert(n.length <= result.length);
         result[n.length .. $] = 0; //zeroize, can't possibly be anything there.
         
-        if (!__ctfe) {
-            version(X86){
-            version(DigitalMars){
+        if (!__ctfe && UseAsm) {
+            version(D_InlineAsm_X86){
                 Int *dividend = cast(Int *) n.ptr;
                 Int *quotent = result.ptr;
                 Int len = n.length;
@@ -907,7 +919,7 @@ private {
         assert(result.length == value.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
         enum uint32 = uint.sizeof*8;
-        if (!__ctfe) {
+        if (!__ctfe && UseAsm) {
             version(none){}
         }
 
@@ -933,7 +945,7 @@ private {
         assert(value.length == result.length);
         assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
         enum uint32 = uint.sizeof*8;
-        if (!__ctfe) {
+        if (!__ctfe && UseAsm) {
             version(none){}
         }
 
