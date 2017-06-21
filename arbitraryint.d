@@ -33,7 +33,19 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     if(isIntegral!T) {
         if(isSigned!T && v < 0)
             val[1 .. $] = -1;
-        val[0] = v;
+        
+        static if (T.sizeof > Int.sizeof) {
+            static assert(val.sizeof > T.sizeof, "Internal type is larger than Arbitrary Int...");
+
+            int count = T.sizeof / Int.sizeof;
+            T r = 0;
+            foreach(ref _v; val[0 .. count]) {
+                _v = cast(Int) v;
+                v >>= Int.sizeof*8;
+            }
+        } else {
+            val[0] = v;
+        }
     }
     
     ///Takes any ArbitraryInt data, although it might not fit
@@ -111,7 +123,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             enum signFlags = 0;
         }
         
-        static if (isIntegral!T) {
+        static if (isIntegral!T && T.sizeof <= Int.sizeof) {
             Int[1] rhs = other;
             
             static if (op == "+") {
@@ -176,6 +188,9 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             }
             
             return result;
+        } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
+            //convert and perform peration.
+            mixin ("return this "~op~" ArbitraryInt!(NumBits, isSigned!T)(cast(T) other);");
         } else static if (isArbitraryInt!T) {
             static if (op == "+") {
                 add(result.val, other.val);
@@ -225,34 +240,8 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      */    
     ArbitraryInt opBinaryRight(string op, T)(const(T) other) const
     if (isIntegral!T) {
-        ArbitraryInt result = void;
-        Int[Size*2] buff = void;
-        Int[1] lhs;
-        lhs[0] = other;
-        
-        static if (op == "+" || op == "-") {
-            static if (op == "-") {
-                result.val[] = ~this.val[];
-                inc(result.val);
-            } else
-                result = this;
-            add(result.val, lhs[]);
-        } else static if (op == "*") {
-            mul(buff, this.val, lhs);
-            result.val[] = buff[0 .. Size];
-        } else static if (op == "/") {
-            //going all out extra isn't worth it, just forward to opBinary
-            result = ArbitraryInt(other) / this;
-        } else static if (op == "%") {
-            result = ArbitraryInt(other) % this;
-        } else static if (op == "&" || op == "|" || op == "^") {
-            mixin("result.val[0] "~op~"= other;");
-        //unique int rhs only.
-        } else {
-            static assert(false, "Operation "~op~" Not implimented");
-        }
-        
-        return result;
+        //reduced to forwarding and converting due to T could be too large a type to fit.
+        mixin("return ArbitraryInt(cast(T) other) "~op~" this;");
     }
     
     /**
@@ -293,12 +282,15 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         if (signFlags == 1) return 1;
         
         //obvious difference not there, so, convert and use cmp
-        static if (isIntegral!T) {
+
+        static if (isIntegral!T && T.sizeof <= Int.sizeof) {
             Int[1] rhs;
             rhs[0] = other;
-            return cmp(this.val, rhs);
+            return signFlags ? icmp(this.val, rhs) : cmp(this.val, rhs);
+        } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
+            return signFlags ? icmp(this.val, ArbitraryInt(cast(T) other).val) : cmp(this.val, ArbitraryInt(cast(T) other).val);
         } else {
-            return cmp(this.val, other.val);
+            return signFlags ? icmp(this.val, other.val) : cmp(this.val, other.val);
         }
     }
     
@@ -306,19 +298,21 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     if (isArbitraryInt!T || isIntegral!T) {
         int signFlags;
         static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
-        static if (isArbitraryInt!T ) { signFlags |= getSign(other.val) ? 1 : 0; }
+        static if (isArbitraryInt!T && T.IsSigned) { signFlags |= getSign(other.val) ? 1 : 0; }
         static if (IsSigned) { signFlags |= getSign(val) ? 2 : 0; }
         
         if (signFlags == 2 || signFlags == 1)
             return false;
         
         //obvious difference not there, so, convert and use cmp
-        static if (isIntegral!T) {
+        static if (isIntegral!T && T.sizeof <= Int.sizeof) {
             Int[1] rhs;
             rhs[0] = other;
-            return cmp(this.val, rhs) == 0;
+            return (signFlags ? icmp(this.val, rhs) : cmp(this.val, rhs)) == 0;
+        } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
+            return (signFlags ? icmp(this.val, ArbitraryInt(cast(T) other).val) : cmp(this.val, ArbitraryInt(cast(T) other).val)) == 0;
         } else {
-            return cmp(this.val, other.val) == 0;
+            return (signFlags ? icmp(this.val, other.val) : cmp(this.val, other.val))== 0;
         }
     }
     
@@ -339,7 +333,20 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
       */
     T opCast(T)()
     if (isIntegral!T){
-        return cast(T) val[0];
+        static if (T.sizeof <= Int.sizeof) {
+            return cast(T) val[0];
+        } else {
+            //it's a larger type than we support, need to build the value instead.
+            static assert(val.sizeof > T.sizeof, "Internal type is larger than Arbitrary Int...");
+
+            int count = T.sizeof / Int.sizeof;
+            T r = 0;
+            foreach_reverse(v; val[0 .. count]) {
+                r <<= Int.sizeof*8;
+                r |= v;
+            }
+            return r;
+        }
     }
     
     /**
@@ -349,9 +356,13 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     if (isArbitraryInt!T) {
         T t;
         static if (T.Size > Size) {
-            t.val[] = val[0 .. Size];
+            static if (IsSigned) {
+                if (getSign(val))
+                    t.val[Size .. $] = -1;
+            }
+            t.val[0 .. Size] = val[];
         } else {
-            t.val[0 .. T.Size] = val[];
+            t.val[] = val[0 .. T.Size];
         }
 
         return t;
@@ -448,6 +459,41 @@ private {
         assert(bitsUsed(0x700000) == 23);
     }
 
+    //like cmp, only reduces both signed flags before considering comparing.
+    Size_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
+        int signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
+
+        if (signFlags == 2) return -1;
+        if (signFlags == 1) return 1;
+        
+        //reduce excessive sign flag (0 / -1)
+        if (signFlags) {
+            while(lhs.length && lhs[$-1] == -1)
+                lhs = lhs[0 .. $-1];
+            while(rhs.length && rhs[$-1] == -1)
+                rhs = rhs[0 .. $-1];
+        } else {
+            while(lhs.length && !lhs[$-1])
+                lhs = lhs[0 .. $-1];
+            while(rhs.length && !rhs[$-1])
+                rhs = rhs[0 .. $-1];
+        }
+        
+        //return length different. If both are signed then invert the answer
+        if (lhs.length != rhs.length)
+                return signFlags ? rhs.length - lhs.length : lhs.length - rhs.length;
+        
+        foreach_reverse(i, v; lhs) {
+            //was v - rhs[i], however if v is sufficiently large it becomes negative
+            if (v > rhs[i])
+                return 1;
+            if (v < rhs[i])
+                return -1;
+        }
+        
+        return 0;
+    }
+
     //basic comparison, any two lengths you want.
     //the larger length of the two is always larger (after reduction).
     Size_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
@@ -484,20 +530,51 @@ private {
 
         assert(cmp(large, small) > 0);
         assert(cmp(small, large) < 0);
+        assert(icmp(large, small) > 0);
+        assert(icmp(small, large) < 0);
         
         //small is smaller, compare by length
         small[1] = 0;
         assert(cmp(large, small) > 0);
+        assert(icmp(large, small) > 0);
         assert(cmp(small, large) < 0);
+        assert(icmp(small, large) < 0);
         
         assert(cmp(large, small[0 .. 1]) > 0);
+        assert(icmp(large, small[0 .. 1]) > 0);
         assert(cmp(small[0 .. 1], large) < 0);
         
+        assert(icmp(small[0 .. 1], large) < 0);
+
         //identical
         assert(cmp(large, large) == 0);
+        assert(icmp(large, large) == 0);
         
         //test sufficiently large comparison
         assert(cmp([0xDA444D2C],[0x2]) > 0);
+
+//        static assert(0, "write tests for icmp, then incorporate into opCmp");
+        
+        assert(icmp([100, 50], [100, -50]) > 0);
+        assert(icmp([100, -50], [100, 50]) < 0);
+
+        small[] = [0, -1];
+        large[] = [0, 0];
+        assert(icmp(small, large) < 0);
+        assert(icmp(large, small) > 0);
+        
+        small[] = [0, -1];
+        large[] = [-1, -1];
+        assert(icmp(small, large) < 0);
+        assert(icmp(large, small) > 0);
+        
+        //forced reduction, identical
+        assert(icmp([-1, -1, -1, -1], [-1])  == 0);
+        assert(icmp([-1], [-1, -1, -1, -1])  == 0);
+
+        assert(icmp([-2, -1], [-1])  <= 0);
+        assert(icmp([0, 0, uint.max], [-1])  < 0);
+        assert(icmp([-1], [0, 0, uint.max])  > 0);
     }
     
     //add any int array to another int array. rhs is truncated to the result/left side.
@@ -1092,6 +1169,19 @@ unittest {
     assert(Cent("-100").toString == "-100");
     assert(Cent("-0xff").toString == "-255");
     
+    //test larger type than supported Int (largest we have is long/ulong), fact!20
+    assert(Cent(2432902008176640000L).toString == "2432902008176640000");
+    assert(Cent(-2432902008176640000L).toString == "-2432902008176640000");
+    
+    //test opcast to smaller simpler types
+    assert((cast(byte) c) == -100);
+    assert((cast(short) c) == -100);
+    assert((cast(int) c) == -100);
+
+    //test larger type than what internally we support.
+    assert((cast(long) c) == -100);
+    assert((cast(long) Cent(-2432902008176640000L)) == -2432902008176640000L);
+    
     // & | ^
     assert((Cent("0x0123456789abcdef") & Cent("0x1122334455667788")) == Cent("0x0122014401224588"));
     assert((Cent("0x0123456789abcdef") | Cent("0x1122334455667788")) == Cent("0x11237767DDEFFFEF"));
@@ -1109,8 +1199,15 @@ unittest {
     assert((Cent(100) - 50).toString == "50");
     assert((Cent(100) * 50).toString == "5000");
     assert((Cent(100) / 50).toString == "2");
-    assert((Cent(100) % 51) == 49); //the exception?
+    assert((Cent(100) % 51).toString == "49");
 
+    //check binary operator, large rhs
+    assert((Cent(100) + 50L).toString == "150");
+    assert((Cent(100) - 50L).toString == "50");
+    assert((Cent(100) * 50L).toString == "5000");
+    assert((Cent(100) / 50L).toString == "2");
+    assert((Cent(100) % 51L).toString == "49");
+    
     assert((Cent(100) << 2).toString == "400");
     assert((Cent(100) >> 2).toString == "25");
     assert((Cent(-100) >> 2).toString == "-25");
@@ -1177,6 +1274,17 @@ unittest {
     assert(Cent(-2) < Cent(-1));
     assert(Cent(-2) > -3);
     assert(Cent(-2) > Cent(-3));
+    
+    //check identical value, but one has a sign
+    c = Cent.min;
+    uc = cast(UCent) c;
+
+    assert(c != uc);
+    assert(uc != c);
+    
+    assert(Cent(-2) > -3L);
+    assert(Cent(-2) != -3L);
+
 
     //verify larger/smaller ArbitraryInts work, basic math
     //a bigger worry was division and multiplication
@@ -1222,6 +1330,11 @@ unittest {
     assert(c.toString == "4");
     c |= 0x1;
     assert(c.toString == "5");
+    
+    //upcast Arbitrary Int
+    assert((cast(DCent) c) == 5);
+    c = -c;
+    assert((cast(Cent) DCent(-5)) == -5);
     
 
 }
