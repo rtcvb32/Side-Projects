@@ -442,7 +442,10 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     All functions use array slices.
 */
 private {
-//    pragma(inline, true): //causing LDC to barf, "can't be always inline & not inline at the same time".
+    //pragma causing LDC to barf, "can't be always inline & not inline at the same time".
+    version(LDC) {} else {
+        pragma(inline, true):
+    }
     
     //internal type, should be second largest type we can work with
     //so uint if we can work with longs, and longs if we can work with cent
@@ -622,11 +625,7 @@ private {
         
         //carry leftover? Adjust accordingly
         if (t)
-            foreach(ref v; lhs[rhs.length .. $]) {
-                ++v;
-                if (v)
-                    break;
-            }
+            inc(lhs[rhs.length .. $]);
 
         return lhs;
     }
@@ -653,11 +652,8 @@ private {
         
         //carry leftover? Adjust accordingly
         if (t)
-            foreach(ref v; lhs[rhs.length .. $]) {
-                --v;
-                if (v != -1)
-                    break;
-            }
+            dec(lhs[rhs.length .. $]);
+
         return lhs;
     }
     
