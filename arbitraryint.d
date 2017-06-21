@@ -764,8 +764,8 @@ private {
                     start:  mov EAX, rhs_v;
                             mul dword ptr [ESI];
                     //EAX:EDX has the result
-                            add [EDI], EAX;
-                            adc [EDI + 4], EDX;
+                            add dword ptr [EDI], EAX;
+                            adc dword ptr [EDI + 4], EDX;
                     //manage carry, if applicable
                             jnc nocarry;
                             mov EAX, EDI;   //EAX, EBX and EDX are free now. Avoids extra memory access.
@@ -781,6 +781,57 @@ private {
                 }
                 return faster ? res[0 .. lhs.length]: res;
             }
+
+            version(none) {
+                foreach(i, rhs_v; cast(ulong[]) rhs) { //cast only, otherwise: integer constant expression expected instead
+                    if (!rhs_v)
+                        continue;
+                    //s & p pointers to get proper location
+                    const(Int)* s = &lhs[0];
+                    Int* p = &res[i];
+                    long cnt = faster ? (lhs.length + 1 - i ) / 2 : lhs.length / 2;
+                    if (cnt <= 0)
+                        break;
+
+                    asm pure nothrow @nogc {
+                            mov RSI, s;
+                            mov RCX, cnt;
+                            mov RDI, p;
+                            
+                            mov R9D, dword ptr rhs_v+4;   //load multiplier
+                            shl R9, 32;
+                            mov R9D, dword ptr rhs_v;
+                            
+                    start:  mov EAX, dword ptr [RSI+4];
+                            shl RAX, 32;
+                            mov EAX, dword ptr [RSI];
+                            mul R9;
+                    //RAX:RDX has the result
+                    //to ensure CF is untouched from shr we need to shift the values out first.
+                    //So the value becomes EBX:EAX:R8D:EDX, no 4th entry with 32bit multiply
+                            mov EBX, EAX;
+                            shr RAX, 32;
+                            mov R8D, EDX;
+                            shr RDX, 32;
+                    
+                            add dword ptr [RDI], EBX;
+                            adc dword ptr [RDI + 4], EAX;
+                            adc dword ptr [RDI + 8], R8D;
+                            adc dword ptr [RDI + 12], EDX;
+                    //manage carry, if applicable
+                            jnc nocarry;
+                            mov RAX, RDI;   //RAX, RBX and RDX are free now. Avoids extra memory access.
+                    carry:  add RDI, 4;
+                            add dword ptr [RDI + 12], 1;
+                            jc carry;
+                            mov RDI, RAX;
+                    //advance
+                    nocarry:add RDI, 8;
+                            add RSI, 8;
+                            loop start;
+                    }
+                }
+                return faster ? res[0 .. lhs.length]: res;
             }
         }
         
@@ -860,16 +911,15 @@ private {
                         mov ESI, dividend;
                         mov EDI, quotent;
                         mov EAX, 4;
-                        mul dword ptr len;      //DX cleared? if it's a really really big num it isn't
+                        mul dword ptr len;      //EDX cleared with this
                         sub EAX, 4;
                         mov EBX, d;     //get divisor
                         add ESI, EAX;   //get to the last element
                         add EDI, EAX;
                         mov ECX, len;   //counter for loop
-                        xor EDX, EDX;
-                start:  mov EAX, [ESI];
+                start:  mov EAX, dword ptr [ESI];
                         div EBX;
-                        mov [EDI], EAX;
+                        mov dword ptr [EDI], EAX;
                         sub ESI, 4;
                         sub EDI, 4;
                         loop start;
@@ -878,6 +928,49 @@ private {
 
                 return r;
             }
+
+            //will give 64-96 bit division instead of 32-64
+            version(none) {
+                Int *dividend = cast(Int *) n.ptr;
+                Int *quotent = result.ptr;
+                Int len = cast(Int) (n.length / 2);
+                Int r;
+                
+                //due to byte order and compatible using uint, gotta load/save 32bit at a time.
+                asm pure nothrow @nogc {
+                        mov RSI, dividend;
+                        mov RDI, quotent;
+                        mov EAX, 8;
+                        mul dword ptr len;
+                        sub EAX, 8;
+                        
+                        xor RBX, RBX;
+                        mov EBX, d;     //get divisor
+                        
+                        add RSI, RAX;   //get to the last element
+                        add RDI, RAX;
+                        
+                        xor RDX, RDX;   //remainder of last divide
+                        xor RCX, RCX;
+                        mov ECX, len;   //counter for loop
+                start:;
+                        mov EAX, dword ptr [RSI+4];//load high
+                        shl RAX, 32;
+                        mov EAX, dword ptr [RSI];  //load low
+                        
+                        div RBX;
+                        
+                        mov dword ptr [RDI], EAX;  //save low
+                        shr RAX, 32;
+                        mov dword ptr [RDI+4], EAX;//save high
+                        
+                        sub RSI, 8;
+                        sub RDI, 8;
+                        loop start;
+                        mov r, EDX;     //save remainder.
+                }
+
+                return r;
             }
         }
 
