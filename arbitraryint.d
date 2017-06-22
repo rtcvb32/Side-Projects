@@ -22,6 +22,7 @@ enum isArbitraryInt(T) = is(T == ArbitraryInt!(size, flag), size_t size, bool fl
   *
   */
 struct ArbitraryInt(size_t NumBits, bool Signed) {
+    static assert(NumBits, "Cannot have empty ArbitaryInt. 64bits minimum!");
     static assert((NumBits % 64) == 0, "Must be a multiple of 64bits");
     enum Size = NumBits / (Int.sizeof*8);
     enum IsSigned = Signed;
@@ -40,7 +41,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             val[1 .. $] = -1;
         
         static if (T.sizeof > Int.sizeof) {
-            static assert(val.sizeof > T.sizeof, "Internal type is larger than Arbitrary Int...");
+            static assert(val.sizeof >= T.sizeof, "Internal type is larger than Arbitrary Int...");
 
             int count = T.sizeof / Int.sizeof;
             T r = 0;
@@ -268,11 +269,58 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      }
      
     /**
+     * impliments incriment/decrement operators
+     */
+    ref ArbitraryInt opUnary(string op)()
+    if (op == "++" || op == "--") {
+        static if (op == "--") {
+            dec(val);
+        }
+        static if (op == "++") {
+            inc(val);
+        }
+        
+        return this;
+     }
+     
+    /**
      * forwards any and all operations from opBinary to opOpAssign
      */
     ref ArbitraryInt opOpAssign(string op, T)(auto ref const(T) other) {
         mixin("this = this "~op~" other;");
         return this;
+    }
+
+    /**
+     * allows implicit assignment of Integrals and ArbitaryInts without requiring opCast
+     * If it's downcasting, you require opCast
+     *
+     * Params:
+     *    other = The other value, can be integral or an ArbitraryInt
+     */
+    ref ArbitraryInt opAssign(T)(auto ref const(T) other) {
+        static if(isArbitraryInt!T && T.Size <= Size) {
+            static if (T.Size < Size) {
+                this.val[other.val.length .. $] = 0;
+            }
+            
+            this.val[0 .. other.val.length] = other.val[];
+            
+            //forward sign if appropriate
+            static if (T.Size < Size && T.IsSigned) {
+                if (getSign(other.val)) {
+                    this.val[other.val.length .. $] = -1;
+                }
+            }
+            return this;
+        } else static if (isIntegral!T) {
+            static assert(T.sizeof <= val.sizeof, "Integral type is larger than ArbitaryInt!?");
+            this.val[] = ArbitraryInt!(NumBits, isSigned!T)(cast(T) other).val[];
+            return this;
+        } else {
+            static assert(isArbitraryInt!T, "Implicit assignment/downcasting of ArbitraryInt is unsupported, use opCast.");
+            static assert(false, "Assignment type for "~T.stringof~" is unsupported");
+        }
     }
     
     /**
@@ -1476,5 +1524,43 @@ unittest {
     c = -c;
     assert((cast(Cent) DCent(-5)) == -5);
     
+    //test increment/decrement
+    c = Cent(10);
+    assert(++c == 11);
+    assert(c++ == 11);
+    assert(c == 12);
+    assert(--c == 11);
+    assert(c-- == 11);
+    assert(c == 10);
+    
+    //check carry goes through the entire thing
+    c = Cent(0);
+    assert(--c == -1);
+    assert(++c == 0);
+    
+    //test opAssign, integrals
+    c = 100;
+    assert(c == 100);
+    c = 1000L;
+    assert(c == 1000);
+    c = -100;
+    assert(c == -100);
+    
+    //same size autoconversion
+    c = uc;
+    
+    alias Long = ArbitraryInt!(64, true);
+    
+    //upcasting will work fine
+    Long l = 0x123456789abcdefL;
+    
+    c = l;
+    assert(c == 0x123456789abcdefL);
+    //check sign carry forward
+    c = -l;
+    assert(c == -0x123456789abcdefL);
+    
+    //check that we can't downcast
+    assert(__traits(compiles, l = c) == false);
 
 }
