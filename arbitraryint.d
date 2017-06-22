@@ -6,8 +6,8 @@
  */
 module std.experimental.arbitraryint;
 
-import std.conv;
-import std.traits;
+import std.traits : isIntegral, isSigned, isUnsigned;
+import std.format : FormatSpec;
 
 /// Unsigned cent implimentation
 alias UCent = ArbitraryInt!(128, false);
@@ -394,17 +394,36 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     }
     
     /// a non-GC variant
-    void toString(scope void delegate (const(char)[]) dg) const {
+    void toString(scope void delegate (const(char)[]) sink) const {
         char[Digits * (val.sizeof+1)] str;
-        dg(_toString(str));
+        sink(_toString(str));
+    }
+    
+    ///format capable.
+    void toString(scope void delegate (const(char)[]) sink, FormatSpec!char fmt) const {
+        char[Digits * (val.sizeof+1)] str;
+        switch(fmt.spec)
+        {
+            case 's':
+            case 'd':
+                sink(_toString(str));
+                break;
+            case 'x':
+                sink(_toString(str[(str.length % 7) .. $], 16, 7));
+                break;
+            default:
+                assert(false, "Format unsupported!");
+        }
     }
     
     /** creates a string of base10 to represent the number
       * seeing as division is expensive, it's far faster to grab a bunch of digits and use a cheaper divides
       * every 32bit block can hold 9 digits and 64bit can hold 18 digits, makes a mighty simple algorighm then
       */
-    private char[] _toString(char[] str) const pure nothrow @nogc {
-        enum DigitsMod = 10L^^Digits;
+    private char[] _toString(char[] str, Int base=10, Int digits=Digits) const pure nothrow @nogc {
+        static immutable string digitstring = "0123456789ABCDEF";
+        Int digitsMod = base^^digits;
+
         ArbitraryInt tmp = this;
         Int tmod;
         
@@ -415,12 +434,12 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         }
         
         foreach_reverse(i, ref ch; str) {
-            if ((i+1) % Digits == 0) {
+            if ((i+1) % digits == 0) {
                 //need both division and mod at the same time, so we'll use one function call
-                tmod = div_small(tmp.val, DigitsMod, tmp.val);
+                tmod = div_small(tmp.val, digitsMod, tmp.val);
             }
-            ch = cast(char)('0' + (tmod%10));
-            tmod /= 10;
+            ch = digitstring[tmod%base];
+            tmod /= base;
             if (!tmod && !tmp) {
                 //if signed, prepend that
                 if(IsSigned && getSign(val)) {
