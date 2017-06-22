@@ -112,6 +112,16 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             this = t;
     }
 
+    //returns the sign flags, namely the current one being '2' and the rhs being '1'. 
+    private size_t AIgetSigns(T)(auto ref const(T) other) const 
+    if (isIntegral!T || isArbitraryInt!T) {
+        size_t signFlags;
+        static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
+        static if (isArbitraryInt!T && T.IsSigned) { signFlags |= getSign(other.val) ? 1 : 0; }
+        static if (IsSigned) { signFlags |= getSign(val) ? 2 : 0; }
+        return signFlags;
+    }
+    
     /**
      * Performs binary operation and pass it back as a new ArbitaryInt.
      *
@@ -122,10 +132,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         ArbitraryInt result = this;
 
         static if ((op == "/" || op == "%") && (IsSigned || T.IsSigned)) {
-            int signFlags;
-            static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
-            static if (isArbitraryInt!T && T.IsSigned) { signFlags |= getSign(other.val) ? 1 : 0; }
-            static if (IsSigned) { signFlags |= getSign(val) ? 2 : 0; }
+            size_t signFlags = AIgetSigns(other);
         } else {
             enum signFlags = 0;
         }
@@ -331,10 +338,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      */    
     ptrdiff_t opCmp(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
-        int signFlags;
-        static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
-        static if (isArbitraryInt!T) { signFlags |= getSign(other.val) ? 1 : 0; }
-        static if (IsSigned) { signFlags |= getSign(val) ? 2 : 0; }
+        size_t signFlags = AIgetSigns(other);
         
         if (signFlags == 2) return -1;
         if (signFlags == 1) return 1;
@@ -360,10 +364,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      */
     bool opEquals(T)(auto ref const(T) other) const
     if (isArbitraryInt!T || isIntegral!T) {
-        int signFlags;
-        static if (isIntegral!T && isSigned!T) { signFlags |= other < 0 ? 1 : 0; }
-        static if (isArbitraryInt!T && T.IsSigned) { signFlags |= getSign(other.val) ? 1 : 0; }
-        static if (IsSigned) { signFlags |= getSign(val) ? 2 : 0; }
+        size_t signFlags = AIgetSigns(other);
         
         if (signFlags == 2 || signFlags == 1)
             return false;
