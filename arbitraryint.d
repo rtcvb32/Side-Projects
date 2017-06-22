@@ -24,7 +24,7 @@ enum isArbitraryInt(T) = is(T == ArbitraryInt!(size, flag), size_t size, bool fl
 struct ArbitraryInt(size_t NumBits, bool Signed) {
     static assert(NumBits, "Cannot have empty ArbitaryInt. 64bits minimum!");
     static assert((NumBits % 64) == 0, "Must be a multiple of 64bits");
-    enum Size = NumBits / (Int.sizeof*8);
+    enum Size = NumBits / IntBits;
     enum IsSigned = Signed;
     private Int[Size] val;
     
@@ -43,11 +43,11 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         static if (T.sizeof > Int.sizeof) {
             static assert(val.sizeof >= T.sizeof, "Internal type is larger than Arbitrary Int...");
 
-            int count = T.sizeof / Int.sizeof;
+            size_t count = T.sizeof / Int.sizeof;
             T r = 0;
             foreach(ref _v; val[0 .. count]) {
                 _v = cast(Int) v;
-                v >>= Int.sizeof*8;
+                v >>= IntBits;
             }
         } else {
             val[0] = v;
@@ -170,7 +170,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             } else static if (op == ">>>") {
                 rshift(result.val, this.val, other, 0);
             } else static if (op == ">>") {
-                rshift(result.val, this.val, other, IsSigned ? (this.val[$-1] & (1<<(Int.sizeof*8-1))) : 0);
+                rshift(result.val, this.val, other, IsSigned ? (this.val[$-1] & (1<<(IntBits-1))) : 0);
             } else static if (op == "<<") {
                 lshift(result.val, this.val, other);
             } else static if (op == "^^") {
@@ -404,10 +404,10 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             //it's a larger type than we support, need to build the value instead.
             static assert(val.sizeof > T.sizeof, "Internal type is larger than Arbitrary Int...");
 
-            int count = T.sizeof / Int.sizeof;
+            size_t count = T.sizeof / Int.sizeof;
             T r = 0;
             foreach_reverse(v; val[0 .. count]) {
-                r <<= Int.sizeof*8;
+                r <<= IntBits;
                 r |= v;
             }
             return r;
@@ -515,13 +515,21 @@ private {
         pragma(inline, true):
     }
     
-    //internal type, should be second largest type we can work with
+    //internal type, should be half the size of the largest type we can work with
     //so uint if we can work with longs, and longs if we can work with cent
     version(none) {
+        alias IntUL = ucent;
+        alias IntL = cent;
         alias Int = ulong;
     } else {
+        alias IntUL = ulong;
+        alias IntL = long;
         alias Int = uint;
     }
+
+    enum IntBits = Int.sizeof*8;
+    enum IntLBits = IntL.sizeof*8;
+    
     
     //forcibly turns off ASM coding.
     debug(NoAsm) {
@@ -533,7 +541,7 @@ private {
     //how many bits used from lower to higher. So 0x5 would return 3, while 0xff would be 8, and 0x100 is 9. etc.
     size_t bitsUsed(Int val) pure @safe @nogc nothrow {
         Int mask = -1;
-        size_t total = Int.sizeof*8, bits = Int.sizeof*8;
+        size_t total = IntBits, bits = IntBits;
         
         if (!val)
             return 0;
@@ -564,7 +572,7 @@ private {
 
     //like cmp, only reduces both signed flags before considering comparing.
     ptrdiff_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
-        int signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
+        size_t signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
 
         if (signFlags == 2) return -1;
         if (signFlags == 1) return 1;
@@ -678,7 +686,7 @@ private {
     
     //add any int array to another int array. rhs is truncated to the result/left side.
     Int[] add(Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
-        long t;    //temporary, doubles as carry
+        IntL t;    //temporary, doubles as carry
         
         if (rhs.length > lhs.length)
             rhs = rhs[0 .. lhs.length];
@@ -688,7 +696,7 @@ private {
             t += rhs[i];
             v = cast(Int) t;
             //reset carry
-            t >>= Int.sizeof*8;
+            t >>= IntBits;
         }
         
         //carry leftover? Adjust accordingly
@@ -700,7 +708,7 @@ private {
 
     //subtract any int array to another int array. rhs is truncated to the result/left side.
     Int[] sub(Int[] lhs, const (Int)[] rhs) pure @safe @nogc nothrow {
-        long t;    //temporary, doubles as carry
+        IntL t;    //temporary, doubles as carry
         
         if (rhs.length > lhs.length)
             rhs = rhs[0 .. lhs.length];
@@ -710,7 +718,7 @@ private {
             t -= rhs[i];
             v = cast(Int) t;
             //reset carry
-            t >>= Int.sizeof*8;
+            t >>= IntBits;
             version(GNU) {
             //gdc workaround - https://github.com/D-Programming-GDC/GDC/pull/501
                 if (t)
@@ -831,7 +839,7 @@ private {
                     //s & p pointers to get proper location
                     const(Int)* s = &lhs[0];
                     Int* p = &res[i];
-                    int cnt = faster ? lhs.length - i : lhs.length;
+                    size_t cnt = faster ? lhs.length - i : lhs.length;
                     if (cnt <= 0)
                         break;
 
@@ -914,13 +922,13 @@ private {
         }
         
         //need some shifts
-        ulong val;
-        uint c;
+        IntUL val;
+        Int c;
 
         foreach(i, r; rhs)
         if (r) {
             val = c = 0;
-            foreach(i2, ulong l; faster ? lhs[0 .. $-i] : lhs) {
+            foreach(i2, IntUL l; faster ? lhs[0 .. $-i] : lhs) {
                 val = l * r + c + res[i + i2];
                 res[i + i2] = cast(Int) val; //lower half saved
                 c = val >> (Int.sizeof * 8);  //upper half becomes carry
@@ -1052,16 +1060,16 @@ private {
             }
         }
 
-        ulong val;
+        IntUL val;
         foreach_reverse(i, v; n) {
             val |= v;
             Int t = cast(Int) (val / d);
             result[i] = t;
             val -= t * d;
-            val <<= 32;
+            val <<= IntBits;
         }
         
-        return val >> 32;
+        return val >> IntBits;
     }
     
     unittest {
@@ -1089,14 +1097,13 @@ private {
     //left shift the value into the result. Value & result can be the same array.
     Int[] lshift(Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
         assert(result.length == value.length);
-        assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
-        enum uint32 = uint.sizeof*8;
+        assert(shiftby >= 0 && shiftby < (result.length*IntBits));
         if (!__ctfe && UseAsm) {
             version(none){}
         }
 
-        size_t skip = shiftby / uint32;    //how many whole blocks to move by
-        shiftby -= skip * uint32;
+        size_t skip = shiftby / IntBits;    //how many whole blocks to move by
+        shiftby -= skip * IntBits;
         ulong t;
 
         if (!shiftby)
@@ -1105,7 +1112,7 @@ private {
             foreach(i, ref v; result[skip .. $]) {
                 t |= (cast(ulong)value[i]) << shiftby;
                 v = cast(uint) t;
-                t >>= uint32;
+                t >>= IntBits;
             }
 
         result[0 .. skip] = 0;
@@ -1116,24 +1123,23 @@ private {
     //right shift the value into the result.  Value & result can be the same array.
     Int[] rshift(Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
         assert(value.length == result.length);
-        assert(shiftby >= 0 && shiftby < (result.length*Int.sizeof*8));
-        enum uint32 = uint.sizeof*8;
+        assert(shiftby >= 0 && shiftby < (result.length*IntBits));
         if (!__ctfe && UseAsm) {
             version(none){}
         }
 
-        size_t skip = shiftby / uint32;    //how many whole blocks to move by
-        shiftby -= skip * uint32;
+        size_t skip = shiftby / IntBits;    //how many whole blocks to move by
+        shiftby -= skip * IntBits;
 
         if (!shiftby)
             result[0 .. $-skip] = value[skip .. $];
         else {
-            size_t left = uint32 - shiftby;
-            ulong t = setcarry ? -1L << (left+uint32) : 0;
+            size_t left = IntBits - shiftby;
+            ulong t = setcarry ? -1L << (left+IntBits) : 0;
             foreach_reverse(i, ref v; result[0 .. $-skip]) {
                 t |= (cast(ulong)value[i+skip]) << left;
-                v = t >> uint32;
-                t <<= uint32;
+                v = t >> IntBits;
+                t <<= IntBits;
             }
         }
 
@@ -1298,7 +1304,7 @@ private {
 
     //assumed signed, returns the highest bit of the last element
     bool getSign(const Int[] n) @safe pure nothrow @nogc {
-        return cast(bool) (n[$-1] & (1 << (Int.sizeof*8-1)));
+        return cast(bool) (n[$-1] & (1 << (IntBits-1)));
     }
     
     unittest {
