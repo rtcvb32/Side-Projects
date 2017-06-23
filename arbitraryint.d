@@ -47,7 +47,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         if(isSigned!T && v < 0)
             val[1 .. $] = -1;
         
-        static if (T.sizeof > Int.sizeof) {
+        static if (!isSmallIntegral!T) {
             static assert(val.sizeof >= T.sizeof, "Internal type is larger than Arbitrary Int...");
 
             size_t count = T.sizeof / Int.sizeof;
@@ -79,7 +79,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     ///Use base10 or base16 to set the value
     this(string v) {
         import std.ascii;
-        Int[Size*2] mult_tmp = void;
+        Int[Size+1] mult_tmp = void;
         Int[1] mult=10, a;
         ArbitraryInt t;
         bool isneg;
@@ -385,8 +385,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         
         //obvious difference not there, so, convert and use cmp
         static if (isIntegral!T && T.sizeof <= Int.sizeof) {
-            Int[1] rhs;
-            rhs[0] = other;
+            Int[1] rhs = other;
             return (signFlags ? icmp(this.val, rhs) : cmp(this.val, rhs)) == 0;
         } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
             return (signFlags ? icmp(this.val, ArbitraryInt(cast(T) other).val) : cmp(this.val, ArbitraryInt(cast(T) other).val)) == 0;
@@ -412,7 +411,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
       */
     T opCast(T)()
     if (isIntegral!T){
-        static if (T.sizeof <= Int.sizeof) {
+        static if (isSmallIntegral!T) {
             return cast(T) val[0];
         } else {
             //it's a larger type than we support, need to build the value instead.
@@ -950,7 +949,8 @@ private {
         foreach(i, r; rhs)
         if (r) {
             val = c = 0;
-            foreach(i2, IntUL l; faster ? lhs[0 .. $-i] : lhs) {
+            foreach(i2, IntUL l; faster ? lhs[0 .. $-i] : lhs)
+            if (l || c) {
                 val = l * r + c + res[i + i2];
                 res[i + i2] = cast(Int) val; //lower half saved
                 c = val >> (Int.sizeof * 8);  //upper half becomes carry
@@ -1238,7 +1238,7 @@ private {
                 r[0] = div_small(n, divisor, q);
             } else {
                 Int[] quotent_t = buff[0 .. n.length];
-                Int[] mult_temp = buff[n.length .. $];
+                Int[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
                 bool dividend_sign = true;
                 size_t reduceby = bitsUsed(divisor), Size = n.length;
                 alias dividend = r;
