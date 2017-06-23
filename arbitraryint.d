@@ -584,6 +584,24 @@ private {
         assert(bitsUsed(0x700000) == 23);
     }
 
+    //goes over an array and reduces it before being handled internally, either by compare, multiply or divide.
+    inout(Int)[] reduceArray(inout(Int)[] arr, ptrdiff_t sign=0) pure @safe nothrow @nogc {
+        assert(sign == 0 || sign == -1);
+        
+        while(arr.length && arr[$-1]==sign)
+            arr = arr[0 .. $-1];
+        
+        return arr;
+    }
+    
+    unittest {
+        assert(reduceArray([100, 0]) == [100]);
+        assert(reduceArray([100, -1]) == [100, -1]);
+        assert(reduceArray([100, -1], -1) == [100]);
+        
+        assert(reduceArray([0, 0]) == []);
+    }
+    
     //like cmp, only reduces both signed flags before considering comparing.
     ptrdiff_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
         size_t signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
@@ -591,18 +609,10 @@ private {
         if (signFlags == 2) return -1;
         if (signFlags == 1) return 1;
         
+        signFlags = signFlags ? -1 : 0;
         //reduce excessive sign flag (0 / -1)
-        if (signFlags) {
-            while(lhs.length && lhs[$-1] == -1)
-                lhs = lhs[0 .. $-1];
-            while(rhs.length && rhs[$-1] == -1)
-                rhs = rhs[0 .. $-1];
-        } else {
-            while(lhs.length && !lhs[$-1])
-                lhs = lhs[0 .. $-1];
-            while(rhs.length && !rhs[$-1])
-                rhs = rhs[0 .. $-1];
-        }
+        lhs = reduceArray(lhs, signFlags);
+        rhs = reduceArray(rhs, signFlags);
         
         //return length different. If both are signed then invert the answer
         if (lhs.length != rhs.length)
@@ -623,10 +633,8 @@ private {
     //the larger length of the two is always larger (after reduction).
     ptrdiff_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
         //reduce
-        while(lhs.length && !lhs[$-1])
-            lhs = lhs[0 .. $-1];
-        while(rhs.length && !rhs[$-1])
-            rhs = rhs[0 .. $-1];
+        lhs = reduceArray(lhs);
+        rhs = reduceArray(rhs);
         
         if (lhs.length != rhs.length)
             return lhs.length - rhs.length;
@@ -996,9 +1004,13 @@ private {
 
     //modular division using native types, part of the larger division code needed.
     //stores the quotient in the result, and returns the remainder
-    Int div_small(const Int[] n, Int d, Int[] result) pure nothrow @nogc {
+    Int div_small(const(Int)[] n, Int d, Int[] result) pure nothrow @nogc {
         assert(n.length <= result.length);
+        
+        //shrink empty untouched of n that only slows it down.
+        n = reduceArray(n);
         result[n.length .. $] = 0; //zeroize, can't possibly be anything there.
+        result = result[0 .. n.length];
         
         if (!__ctfe && UseAsm) {
             version(D_InlineAsm_X86){
@@ -1203,8 +1215,17 @@ private {
     
     the buff must be at least 3 times larger than the n value, for temporaries. This avoids the gc
     */
-    void div(Int[] buff, const Int[] n, const Int[] d, Int[] q, Int[] r) pure @nogc nothrow {
+    void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nogc nothrow {
         assert(d, "Divide by zero");
+
+        //reduction for n, q & r
+        n = reduceArray(n);
+
+        //zeroize never reached area and shorten
+        q[n.length .. $] = 0;
+        r[n.length .. $] = 0;
+        q = q[0 .. n.length];
+        r = r[0 .. n.length];
         
         foreach_reverse(i, Int divisor; d) {
             if (!divisor)
