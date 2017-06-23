@@ -17,6 +17,13 @@ alias Cent = ArbitraryInt!(128, true);
 /// Returns if the template is an ArbitraryInt type
 enum isArbitraryInt(T) = is(T == ArbitraryInt!(size, flag), size_t size, bool flag);
 
+//this test is to check for a if a binary operation where the sign matters
+//if either is negative then the result is neg, but calculate them after inverting them
+private enum opSignMatters(string op) = (op == "/" || op == "%" || op == "*" || op == "^^");
+
+//checks if a integral and not larger than our smaller int type
+private enum isSmallIntegral(T) = (isIntegral!T && T.sizeof <= Int.sizeof);
+
 /**
   *  Template for Arbitrary Int. Creates a simulated/emulated byte as long as it's multiple of 64 bits
   *
@@ -122,6 +129,10 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         return signFlags;
     }
     
+    private static bool isOneSigned(size_t flags) pure @safe nothrow @nogc {
+        return flags == 1 || flags == 2;
+    }
+    
     /**
      * Performs binary operation and pass it back as a new ArbitaryInt.
      *
@@ -130,40 +141,50 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      */
     ArbitraryInt opBinary(string op, T)(auto ref const(T) other) const {
         ArbitraryInt result = this;
-
-        static if ((op == "/" || op == "%") && (IsSigned || T.IsSigned)) {
+        
+        static if ((IsSigned || (isArbitraryInt!T && T.IsSigned) || (isIntegral!T && isSigned!T))   //lhs or rhs is signed
+                && (isArbitraryInt!T || isSmallIntegral!T)                                          //where rhs isn't going to be upgraded
+                && opSignMatters!op) {                                                      //binaryop where inverting may be neccesary
             size_t signFlags = AIgetSigns(other);
+            Int[Size] lhs = this.val;
+            
+            static if (isArbitraryInt!T) {
+                Int[T.Size] rhs = other.val;
+            } else {
+                Int[1] rhs = other;
+            }
+
+            if (signFlags & 2)
+                neg(lhs);
+            if (signFlags & 1)
+                neg(rhs);
         } else {
             enum signFlags = 0;
+            alias lhs = val;
+            static if (isArbitraryInt!T) {
+                const Int[] rhs = other.val;
+            } else static if (isSmallIntegral!T) {
+                Int[1] rhs = other;
+            }
         }
         
-        static if (isIntegral!T && T.sizeof <= Int.sizeof) {
-            Int[1] rhs = other;
-            
+        static if (isSmallIntegral!T) {
             static if (op == "+") {
                 add(result.val, rhs[]);
             } else static if (op == "-") {
                 sub(result.val, rhs[]);
             } else static if (op == "*") {
-                Int[Size*2] m_tmp = void;
-                mul(m_tmp, this.val, rhs);
+                Int[Size+1] m_tmp = void;
+                
+                mul(m_tmp, lhs, rhs);
                 result.val[] = m_tmp[0 .. Size];
             } else static if (op == "/" || op == "%") {
-                T rem;
-                if (signFlags & 2) {
-                    ArbitraryInt lhs = this;
-                    rem = div_small(neg(lhs.val), (signFlags & 1) ? -other : other, result.val);
-                } else {
-                    rem = div_small(this.val, (signFlags & 1) ? -other : other, result.val);
-                }
+                T rem = div_small(lhs, rhs[0], result.val);
                 
                 static if (op == "%") {
                     result.val[] = 0;
                     result.val[0] = rem;
                 }
-                
-                if (signFlags == 1 || signFlags == 2)
-                    neg(result.val);
             } else static if (op == "&" || op == "|" || op == "^") {
                 mixin("result.val[0] "~op~"= other;");
             //unique int rhs only.
@@ -174,35 +195,30 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             } else static if (op == "<<") {
                 lshift(result.val, this.val, other);
             } else static if (op == "^^") {
-                Int[Size*2+1] m_tmp = void;
+                assert(other >= 0, "negative power only equals 0, no point in using it.");
+                Int[Size*2] m_tmp = void;
+                
                 result.val[] = 0;
                 result.val[0] = 1;
-
-                static if (IsSigned) {
-                    bool isneg = getSign(this.val);
-                    ArbitraryInt tmp_this = this;
-                    if (isneg)
-                        neg(tmp_this.val);
-                } else {
-                    enum isneg = false;
-                    alias tmp_this = this;
-                }
                 
                 foreach(i; 0 .. other) {
-                    mul(m_tmp, result.val, tmp_this.val, false);
-                    assert(m_tmp[$-1] == 0, "Power result too large to be useful on this size of Arbitrary Int");
+                    mul(m_tmp, result.val, lhs, false);
+                    
+                    assert(cmp(m_tmp[Size .. $], []) == 0, "Power result too large to be useful on this size of Arbitrary Int");
                     result.val[] = m_tmp[0 .. Size];
-                }
-                
-                if (isneg) {
-                    neg(result.val);
                 }
             } else {
                 static assert(false, "Operation "~op~" Not implimented");
             }
             
+            //if one of the results is neg we need to give a negative result.
+            static if (opSignMatters!op) {
+                if (isOneSigned(signFlags))
+                    neg(result.val);
+            }
+            
             return result;
-        } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
+        } else static if (isIntegral!T) {
             //convert and perform peration. As it's larger than Int/type internally we spuport
             //it's easier to just forward it.
             mixin ("return this "~op~" ArbitraryInt!(NumBits, isSigned!T)(cast(T) other);");
@@ -213,26 +229,19 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 sub(result.val, other.val);
             } else static if (op == "*") {
                 Int[Size+T.Size] m_tmp = void;
-                mul(m_tmp, this.val, other.val);
+                mul(m_tmp, lhs, rhs);
                 result.val[] = m_tmp[0 .. Size];
             } else static if (op == "/" || op == "%") {
                 import std.algorithm : max;
                 enum SIZE = max(Size, T.Size);
                 Int[SIZE*3] buff = void;
-                Int[T.Size] d = other.val;
-                Int[Size] lhs = this.val, qr = void;
-
-                if (signFlags & 1) neg(d);
-                if (signFlags & 2) neg(lhs);
+                Int[Size] qr = void;
                 
                 static if (op == "/") {
-                    div(buff, lhs, d, result.val, qr);
+                    div(buff, lhs, rhs, result.val, qr);
                 } else {
-                    div(buff, lhs, d, qr, result.val);
+                    div(buff, lhs, rhs, qr, result.val);
                 }
-
-                if (signFlags == 1 || signFlags == 2)
-                    neg(result.val);
             } else static if (op == "&" || op == "|" || op == "^") {
                 import std.algorithm : min;
                 enum Dollar = min(Size, T.Size);
@@ -241,6 +250,13 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 static assert(false, "Operation "~op~" Not implimented");
             }
 
+            
+            //in the case of one of the required operators, we invert if both aren't the same sign
+            static if (opSignMatters!op) {
+                if (isOneSigned(signFlags))
+                    neg(result.val);
+            }
+            
             return result;
         } else {
             static assert(0, "Unknown type, cannot perform op " ~ op ~ " on " ~ T.stringof);
@@ -344,12 +360,10 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         if (signFlags == 1) return 1;
         
         //obvious difference not there, so, convert and use cmp
-
-        static if (isIntegral!T && T.sizeof <= Int.sizeof) {
-            Int[1] rhs;
-            rhs[0] = other;
+        static if (isSmallIntegral!T) {
+            Int[1] rhs = other;
             return signFlags ? icmp(this.val, rhs) : cmp(this.val, rhs);
-        } else static if (isIntegral!T && T.sizeof > Int.sizeof) {
+        } else static if (isIntegral!T) {
             return signFlags ? icmp(this.val, ArbitraryInt(cast(T) other).val) : cmp(this.val, ArbitraryInt(cast(T) other).val);
         } else {
             return signFlags ? icmp(this.val, other.val) : cmp(this.val, other.val);
