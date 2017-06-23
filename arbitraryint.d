@@ -1453,10 +1453,10 @@ unittest {
     assert((Cent(100) % 51).toString == "49");
     assert((Cent(-100) / 50).toString == "-2");
     assert((Cent(-100) % 51).toString == "-49");
-    assert((Cent(100) / -50).toString == "-2");
-    assert((Cent(100) % -51).toString == "-49");
-    assert((Cent(-100) / -50).toString == "2");
-    assert((Cent(-100) % -51).toString == "49");
+    assert((Cent(100) / -50L).toString == "-2");
+    assert((Cent(100) % -51L).toString == "-49");
+    assert((Cent(-100) / -50L).toString == "2");
+    assert((Cent(-100) % -51L).toString == "49");
 
     assert((100 / Cent(50)).toString == "2");
     assert((100 % Cent(51)).toString == "49");
@@ -1466,6 +1466,23 @@ unittest {
     assert((100 % Cent(-51)).toString == "-49");
     assert((-100 / Cent(-50)).toString == "2");
     assert((-100 % Cent(-51)).toString == "49");
+    
+    //signed multiply
+    assert((Cent(-100) * Cent(50)).toString == "-5000");
+    assert((Cent(100) * Cent(-50)).toString == "-5000");
+    assert((Cent(-100) * Cent(-50)).toString == "5000");
+
+    assert((Cent(-100) * 50).toString == "-5000");
+    assert((Cent(100) * -50).toString == "-5000");
+    assert((Cent(-100) * -50).toString == "5000");
+
+    assert((Cent(-100) * 50L).toString == "-5000");
+    assert((Cent(100) * -50L).toString == "-5000");
+    assert((Cent(-100) * -50L).toString == "5000");
+
+    assert((-100 * Cent(50)).toString == "-5000");
+    assert((100 * Cent(-50)).toString == "-5000");
+    assert((-100 * Cent(-50)).toString == "5000");
     
     //comparisons
     assert(UCent(100) > UCent(50));
@@ -1544,6 +1561,7 @@ unittest {
     assert((cast(DCent) c) == 5);
     c = -c;
     assert((cast(Cent) DCent(-5)) == -5);
+    assert((cast(DCent) c) == -5);
     
     //test increment/decrement
     c = Cent(10);
