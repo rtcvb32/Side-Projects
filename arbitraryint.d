@@ -246,13 +246,18 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 import std.algorithm : min;
                 enum Dollar = min(Size, T.Size);
                 mixin("result.val[0 .. Dollar] = this.val[0 .. Dollar] "~op~" other.val[0 .. Dollar];");
+
+            } else static if (op == ">>>" || op == ">>" || op == "<<" || op == "^^") {
+                //none of these make sense as a larger int type, so forward to the other half.
+                assert(cmp(other.val[1 .. $], null) == 0, "Value too large for type "~Int.stringof~" or is negative");
+                mixin("result = this.opBinary!(op, Int)(other.val[0]);");
             } else {
                 static assert(false, "Operation "~op~" Not implimented");
             }
 
             
             //in the case of one of the required operators, we invert if both aren't the same sign
-            static if (opSignMatters!op) {
+            static if (opSignMatters!op && op!="^^") {
                 if (isOneSigned(signFlags))
                     neg(result.val);
             }
@@ -1445,6 +1450,15 @@ unittest {
     assert((Cent(3) ^^ 80).toString == "147808829414345923316083210206383297601");
     assert((Cent(-3) ^^ 80).toString == "-147808829414345923316083210206383297601");
     assert((UCent(3) ^^ 80).toString == "147808829414345923316083210206383297601"); //just tests the alternate/unsigned path
+
+    //make sure these int-only types using ArbitaryInt forces downcasting.
+    assert((Cent(100) << Cent(2)).toString == "400");
+    assert((Cent(100) >> Cent(2)).toString == "25");
+    assert((Cent(-100) >> Cent(2)).toString == "-25");
+    assert((Cent(-100) >>> Cent(2)).toString == "85070591730234615865843651857942052839");
+    assert((Cent(3) ^^ Cent(80)).toString == "147808829414345923316083210206383297601");
+    assert((Cent(-3) ^^ Cent(80)).toString == "-147808829414345923316083210206383297601");
+    assert((UCent(3) ^^ Cent(80)).toString == "147808829414345923316083210206383297601"); //just tests the alternate/unsigned path
     
     //binaryRight
     assert((100 + Cent(50)).toString == "150");
