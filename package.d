@@ -201,7 +201,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             } else static if (op == ">>>") {
                 rshift(result.val, this.val, other);
             } else static if (op == ">>") {
-                rshift(result.val, this.val, other, IsSigned ? (this.val[$-1] & (1<<(IntBits-1))) : 0);
+                rshift(result.val, this.val, other, IsSigned ? getSign(val) : false);
             } else static if (op == "<<") {
                 lshift(result.val, this.val, other);
             } else static if (op == "^^") {
@@ -540,8 +540,8 @@ unittest {
     //first check that the toString is correct, and basic assignments
     Cent c;
     UCent uc;
-    
-    uc.val[] = [0x0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1];    //fact34
+    uint[4] f34 = [0x0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1];    //fact34
+    uc.val[] = cast(Int[]) f34;
     assert(uc.toString == "295232799039604140847618609643520000000");
     c = cast(Cent) uc;
     assert(c.toString == "-45049567881334322615755997788248211456");

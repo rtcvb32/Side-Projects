@@ -90,7 +90,7 @@ unittest {
 }
 
 //like cmp, only reduces both signed flags before considering comparing.
-ptrdiff_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
+ptrdiff_t icmp(const(uint)[] lhs, const(uint)[] rhs) pure @safe nothrow @nogc {
     size_t signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
 
     if (signFlags == 2) return -1;
@@ -118,7 +118,7 @@ ptrdiff_t icmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
 
 //basic comparison, any two lengths you want.
 //the larger length of the two is always larger (after reduction).
-ptrdiff_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
+ptrdiff_t cmp(const(uint)[] lhs, const(uint)[] rhs) pure @safe nothrow @nogc {
     //reduce
     lhs = reduceArray(lhs);
     rhs = reduceArray(rhs);
@@ -138,8 +138,8 @@ ptrdiff_t cmp(const(Int)[] lhs, const(Int)[] rhs) pure @safe nothrow @nogc {
 }
 
 unittest {
-    Int[4] buff;
-    Int[] small = buff[0 .. 2], large=buff[2 .. $];
+    uint[4] buff;
+    uint[] small = buff[0 .. 2], large=buff[2 .. $];
     
     //identical size, larger later elements
     small[] = [100, 100];
@@ -189,8 +189,8 @@ unittest {
     assert(icmp([-1], [-1, -1, -1, -1])  == 0);
 
     assert(icmp([-2, -1], [-1])  <= 0);
-    assert(icmp([0, 0, Int.max], [-1])  < 0);
-    assert(icmp([-1], [0, 0, Int.max])  > 0);
+    assert(icmp([0, 0, uint.max], [-1])  < 0);
+    assert(icmp([-1], [0, 0, uint.max])  > 0);
 }
 
 //add any int array to another int array. rhs is truncated to the result/left side.
@@ -236,8 +236,8 @@ if(isIntegral!T && isUnsigned!T) {
 }
 
 unittest {
-    Int[3] buff;
-    Int[] lhs = buff[], rhs;
+    uint[3] buff;
+    uint[] lhs = buff[], rhs;
 
     lhs[] = [100,200,300];
     
@@ -319,7 +319,7 @@ if(isIntegral!T && isUnsigned!T) {
 }
 
 unittest {
-    Int[2] buff;
+    uint[2] buff;
     assert(inc(buff[]) == [1, 0]);
     assert(dec(buff[]) == [0, 0]);
     assert(dec(buff[]) == [-1, -1]);
@@ -329,20 +329,19 @@ unittest {
 //multiply. length of result has to be as big as the lhs+rhs lengths.
 //faster means be less precise, and only return the length that the lhs gives, at which point
 //the lhs has to be as big if not bigger than the rhs.
-Int[] mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pure @nogc nothrow {
-    assert(isUnsigned!Int);
+uint[] mul(uint[] res, const(uint)[] lhs, const(uint)[] rhs, bool faster = true) pure @nogc nothrow {
     assert(res.length >= lhs.length + rhs.length);
 
     res[0 .. (faster ? lhs.length : $)] = 0;
     
     if (!__ctfe && UseAsm) {
         version(D_InlineAsm_X86) {
-            foreach(i, rhs_v; cast(Int[]) rhs) { //cast only, otherwise: integer constant expression expected instead
+            foreach(i, rhs_v; cast(uint[]) rhs) { //cast only, otherwise: integer constant expression expected instead
                 if (!rhs_v)
                     continue;
                 //s & p pointers to get proper location
-                const(Int)* s = &lhs[0];
-                Int* p = &res[i];
+                const(uint)* s = &lhs[0];
+                uint* p = &res[i];
                 size_t cnt = faster ? lhs.length - i : lhs.length;
                 if (cnt <= 0)
                     break;
@@ -374,25 +373,25 @@ Int[] mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pur
     }
     
     //need some shifts
-    IntUL val;
-    Int c;
+    ulong val;
+    uint c;
 
     foreach(i, r; rhs)
     if (r) {
         val = c = 0;
-        foreach(i2, IntUL l; faster ? lhs[0 .. $-i] : lhs)
+        foreach(i2, ulong l; faster ? lhs[0 .. $-i] : lhs)
         if (l || c) {
             val = l * r + c + res[i + i2];
-            res[i + i2] = cast(Int) val; //lower half saved
-            c = val >> (Int.sizeof * 8);  //upper half becomes carry
+            res[i + i2] = cast(uint) val; //lower half saved
+            c = val >> (uint.sizeof * 8);  //upper half becomes carry
         }
         
         //if there's a carry, we add it
         if (!faster && c)
             foreach(i2, ref l; res[i+lhs.length .. $]) {
                 val = c + l;
-                l = cast(Int) val;
-                c = val >> (Int.sizeof * 8);
+                l = cast(uint) val;
+                c = val >> (uint.sizeof * 8);
                 if (!c)
                     break;
             }
@@ -402,7 +401,7 @@ Int[] mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pur
 }
 
 unittest {
-    Int[4] m;
+    uint[4] m;
     
     assert(mul(m[],[0x12345678, 0],[0x12345678, 0], false) == [0x1DF4D840, 0x14B66DC, 0, 0]);
     assert(mul(m[],[0x12345678, 0],[0, 0x12345678], false) == [0, 0x1DF4D840, 0x14B66DC, 0]);
@@ -446,10 +445,10 @@ uint div_small(uint[] buff, const(uint)[] n, uint d, uint[] result) pure nothrow
     
     if (!__ctfe && UseAsm) {
         version(D_InlineAsm_X86){
-            const(Int) *dividend = &n[$-1];
-            Int *quotent = &result[$-1];
-            Int len = n.length;
-            Int r;
+            const(uint) *dividend = &n[$-1];
+            uint *quotent = &result[$-1];
+            uint len = n.length;
+            uint r;
             
             asm pure nothrow @nogc {
                     mov ESI, dividend;
@@ -470,10 +469,10 @@ uint div_small(uint[] buff, const(uint)[] n, uint d, uint[] result) pure nothrow
         }
     }
 
-    IntUL val;
+    ulong val;
     foreach_reverse(i, v; n) {
         val |= v;
-        Int t = cast(Int) (val / d);
+        uint t = cast(uint) (val / d);
         result[i] = t;
         val -= t * d;
         val <<= IntBits;
@@ -484,16 +483,16 @@ uint div_small(uint[] buff, const(uint)[] n, uint d, uint[] result) pure nothrow
 
 unittest {
     //fact34: 295 232799039 604140847 618609643 520000000
-    Int[4] n = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1],
+    uint[4] n = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1],
            q;
 
-    Int[] rem = [295, 232799039, 604140847, 618609643, 520000000];
-    Int[][] q_res = [
-        cast(Int[])[0],
-        cast(Int[])[0x127],
-        cast(Int[])[0xBD3F013F, 0x44],
-        cast(Int[])[0x1FE42B2F, 0x12D9A84, 0x10],
-        cast(Int[])[0xFE3851EB, 0x62C1065F, 0xB9F2D8F9, 0x3],
+    uint[] rem = [295, 232799039, 604140847, 618609643, 520000000];
+    uint[][] q_res = [
+        cast(uint[])[0],
+        cast(uint[])[0x127],
+        cast(uint[])[0xBD3F013F, 0x44],
+        cast(uint[])[0x1FE42B2F, 0x12D9A84, 0x10],
+        cast(uint[])[0xFE3851EB, 0x62C1065F, 0xB9F2D8F9, 0x3],
     ];
     
     //basically do 9 digits at a time as though we were printing, easiest verification with known factorial!34
@@ -558,7 +557,7 @@ if(isIntegral!T) {
 
 unittest {
     enum orig = [0x76543210, 0xfedcba98];
-    Int[2] lhs = orig;
+    uint[2] lhs = orig;
     
     assert(lshift(lhs, orig, 4) == [0x65432100, 0xedcba987]);
     assert(lshift(lhs, orig, 32) == [0, 0x76543210]);
@@ -597,7 +596,7 @@ showed it went from 8 passes to 2.
 
 the buff must be at least 3 times larger than the n value, for temporaries. This avoids the gc
 */
-void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nogc nothrow {
+void div(uint[] buff, const(uint)[] n, const(uint)[] d, uint[] q, uint[] r) pure @nogc nothrow {
     assert(d, "Divide by zero");
 
     //reduction for n, q & r
@@ -609,7 +608,7 @@ void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nog
     q = q[0 .. n.length];
     r = r[0 .. n.length];
     
-    foreach_reverse(i, Int divisor; d) {
+    foreach_reverse(i, uint divisor; d) {
         if (!divisor)
             continue;
     //find most significant to divide by.
@@ -619,8 +618,8 @@ void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nog
             r[1 .. $] = 0;
             r[0] = div_small(null, n, divisor, q);
         } else {
-            Int[] quotent_t = buff[0 .. n.length];
-            Int[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
+            uint[] quotent_t = buff[0 .. n.length];
+            uint[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
             bool dividend_sign = true;
             size_t reduceby = bitsUsed(divisor), Size = n.length;
             alias dividend = r;
@@ -687,8 +686,8 @@ void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nog
 }
 
 unittest {
-    Int[12] buff;
-    Int[4]  fact13p1=[0x7328CC01, 1, 0, 0],
+    uint[12] buff;
+    uint[4]  fact13p1=[0x7328CC01, 1, 0, 0],
             fact21 = [0xB8C40000, 0xC5077D36, 2, 0],
             fact28 = [0xAE000000, 0xAD2CD59D, 0xD925BA47, 3],
             fact34 = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1],
@@ -713,7 +712,7 @@ unittest {
     assert(r == [0x6180D3DF, 0, 0, 0]);
 
     //test forward to div_small, small enough divisor
-    Int[4] sm = [123456789, 0, 0, 0];
+    uint[4] sm = [123456789, 0, 0, 0];
     div(buff, fact21, sm, q, r);
     assert(q == [0x5A95ECDC, 0x60, 0, 0]);
     assert(r == [0x59765F5, 0, 0, 0]);
@@ -722,7 +721,7 @@ unittest {
 //assumed signed, returns the highest bit of the last element
 bool getSign(T)(const T[] n) @safe pure nothrow @nogc
 if(isIntegral!T) {
-    return cast(bool) (n[$-1] & (1 << (IntBits-1)));
+    return cast(bool) (n[$-1] & (T(1) << (T.sizeof*8 - 1)));
 }
 
 unittest {
@@ -748,7 +747,7 @@ if(isIntegral!T && isUnsigned!T) {
 }
 
 unittest {
-    Int[2] val = [100, 0];
+    uint[2] val = [100, 0];
     
     assert(neg(val) == [-100, -1]);
     assert(neg(val) == [100, 0]);

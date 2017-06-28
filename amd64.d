@@ -145,25 +145,21 @@ version(D_InlineAsm_X86_64) {
     //multiply. length of result has to be as big as the lhs+rhs lengths.
     //faster means be less precise, and only return the length that the lhs gives, at which point
     //the lhs has to be as big if not bigger than the rhs.
-    Int[] mul(Int[] res, const(Int)[] lhs, const(Int)[] rhs, bool faster = true) pure @nogc nothrow {
-        assert(isUnsigned!Int);
+    ulong[] mul(ulong[] res, const(ulong)[] lhs, const(ulong)[] rhs, bool faster = true) pure @nogc nothrow {
+        assert(isUnsigned!ulong);
         assert(res.length >= lhs.length + rhs.length);
 
         res[0 .. (faster ? lhs.length : $)] = 0;
         
         if (!__ctfe && UseAsm) {
             version(D_InlineAsm_X86_64) {
-                ulong[1] extended = rhs[0];
-                if (rhs.length == 1)
-                    rhs = cast(Int[]) extended;
-
                 foreach(i, rhs_v; cast(ulong[]) rhs) { //cast only, otherwise: integer constant expression expected instead
                     if (!rhs_v)
                         continue;
                     //s & p pointers to get proper location
-                    const(Int)* s = &lhs[0];
-                    auto p = &res[i+i];
-                    long cnt = faster ? (lhs.length + 1 - i ) / 2 : lhs.length / 2;
+                    const(ulong)* s = &lhs[0];
+                    auto p = &res[i];
+                    long cnt = faster ? (lhs.length - i) : lhs.length;
                     if (cnt <= 0)
                         break;
 
@@ -261,16 +257,16 @@ version(D_InlineAsm_X86_64) {
             assert(mul(m[0 .. 3],[0x12345678, 0x12345678],[0x12345678]) == [0x1DF4D840, 0x1F403F1C]);
         } else {
             //64-only tests
-            Int[8] m;
-
-            assert(mul(m[],[0x9abcdef0, 0x12345678, 0x9abcdef0, 0x12345678], [0x11223344, 0x55667788], false) ==
-                                    [0x467507C0, 0x45041640, 0xC71B4D5D, 0x4B16C050, 0x80A6459D, 0x612AA10, 0, 0]);
-            assert(mul(m[],[0x11223344, 0x55667788], [0x9abcdef0, 0x12345678, 0x9abcdef0, 0x12345678], false) ==
-                                    [0x467507C0, 0x45041640, 0xC71B4D5D, 0x4B16C050, 0x80A6459D, 0x612AA10, 0, 0]);
-            assert(mul(m[],[0x9abcdef0, 0x12345678, 0x9abcdef0, 0x12345678],[0x11223344, 0x55667788, 0x99aabbcc, 0xddeeff00], false) ==
-                                    [0x467507C0, 0x45041640, 0x87D6449D, 0x1DB8741D, 0xF025B2D6, 0xE87C8B4D, 0xAEC475F8, 0xFC82D70]);
-            assert(mul(m[],[0x9abcdef0, 0x12345678, 0x9abcdef0, 0x12345678],[0x11223344, 0x55667788, 0x99aabbcc, 0xddeeff00]) ==
-                                    [0x467507C0, 0x45041640, 0x87D6449D, 0x1DB8741D]);
+            ulong[4] m;
+            
+            assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x1122334455667788L], false)
+                        == [0xC5E365068397FF80L, 0xC71B4D5D4B16C050L, 0x137E856C77EC0D0L, 0]);
+            assert(mul(m[],[0x1122334455667788L], [0x123456789abcdef0L, 0x123456789abcdef0L], false)
+                        == [0xC5E365068397FF80L, 0xC71B4D5D4B16C050L, 0x137E856C77EC0D0L, 0]);
+            assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x123456789abcdef0L, 0x123456789abcdef0L], false)
+                        == [0xA5E20890F2A52100L, 0x4D0F77FE1940EEDCL, 0xA878D6495A927AB9L, 0x14B66DC33F6ACDCL]);
+            assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x123456789abcdef0L, 0x123456789abcdef0L])
+                        == [0xA5E20890F2A52100L, 0x4D0F77FE1940EEDCL]);
         }
     }
 
@@ -315,18 +311,19 @@ version(D_InlineAsm_X86_64) {
     unittest {
         //fact34: 295 232799039 604140847 618609643 520000000
 
-        n = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1];
+        uint[4] n = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1], q;
         ulong[] reml = [295, 232_79903_96041_40847L, 618_60964_35200_00000L];
-        q_res = [
-            cast(Int[])[0],
-            cast(Int[])[0x127, 0, 0, 0],
-            cast(Int[])[0x1FE42B2F, 0x12D9A84, 0x10, 0],
+        ulong[][] q_res = [
+            [0L, 0],
+            [0x127L, 0],
+            [0x12D9A841FE42B2FL, 0x10],
         ];
         
         //18 digits version, more or less the same
+        uint[n.length * 4] buff;
         foreach_reverse(i, r; reml) {
-            assert(r == div_small(cast(ulong[]) n, 1000_00000_00000_00000L, cast(ulong[]) q));
-            assert(cmp(q[], q_res[i]) == 0);
+            assert(r == div_small(cast(ulong[]) buff, cast(ulong[]) n, 1000_00000_00000_00000L, cast(ulong[]) q));
+            assert(cmp(cast(ulong[]) q, q_res[i]) == 0);
             n[] = q[];
         }
     }
@@ -341,7 +338,7 @@ version(D_InlineAsm_X86_64) {
 
     the buff must be at least 3 times larger than the n value, for temporaries. This avoids the gc
     */
-    void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nogc nothrow {
+    void div(ulong[] buff, const(ulong)[] n, const(ulong)[] d, ulong[] q, ulong[] r) pure @nogc nothrow {
         assert(d, "Divide by zero");
 
         //reduction for n, q & r
@@ -523,36 +520,36 @@ version(D_InlineAsm_X86_64) {
     +/
 
     unittest {
-        Int[12] buff;
-        Int[4]  fact13p1=[0x7328CC01, 1, 0, 0],
-                fact21 = [0xB8C40000, 0xC5077D36, 2, 0],
-                fact28 = [0xAE000000, 0xAD2CD59D, 0xD925BA47, 3],
-                fact34 = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1],
+        ulong[6] buff;
+        ulong[2]  fact13p1=[0x17328CC01L, 0],
+                fact21 = [0xC5077D36B8C40000L, 2],
+                fact28 = [0xAD2CD59DAE000000L, 0x3D925BA47L],
+                fact34 = [0x445DA75B00000000L, 0xDE1BC4D19EFCAC82L],
                 q, r;
         
     //        5778574175582208000 & 0
         //even result
         div(buff, fact34, fact21, q, r);
-        assert(q == [0xB3D2C000, 0x50319E98, 0, 0]);
-        assert(r == [0, 0, 0, 0]);
+        assert(q == [0x50319E98B3D2C000L, 0]);
+        assert(r == [0, 0]);
         
         //force remainder, fact21+1
         inc(fact21);
     //        5778574175582207999 & 45312367996127232001
         div(buff, fact34, fact21, q, r);
-        assert(q == [0xB3D2BFFF, 0x50319E98, 0, 0]);
-        assert(r == [0x4F14001, 0x74D5DE9E, 2, 0]);
+        assert(q == [0x50319E98B3D2BFFFL, 0]);
+        assert(r == [0x74D5DE9E04F14001L, 2]);
 
         //test with at least one negative interation calculation
         div(buff, fact28, fact13p1, q, r);
-        assert(q == [0xF1BCE021, 0xA77C82A7, 2, 0]);
-        assert(r == [0x6180D3DF, 0, 0, 0]);
+        assert(q == [0xA77C82A7F1BCE021L, 2]);
+        assert(r == [0x6180D3DFL, 0]);
 
         //test forward to div_small, small enough divisor
-        Int[4] sm = [123456789, 0, 0, 0];
+        ulong[2] sm = [123456789, 0];
         div(buff, fact21, sm, q, r);
-        assert(q == [0x5A95ECDC, 0x60, 0, 0]);
-        assert(r == [0x59765F5, 0, 0, 0]);
+        assert(q == [0x605A95ECDCL, 0]);
+        assert(r == [0x59765F5, 0]);
     }
 } else {
     static assert(false, "This shouldn't be included, you aren't using x86_64 code");
