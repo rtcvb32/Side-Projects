@@ -191,32 +191,7 @@ version(D_InlineAsm_X86_64) {
             }
         }
         
-        //need some shifts
-        IntUL val;
-        Int c;
-
-        foreach(i, r; rhs)
-        if (r) {
-            val = c = 0;
-            foreach(i2, IntUL l; faster ? lhs[0 .. $-i] : lhs)
-            if (l || c) {
-                val = l * r + c + res[i + i2];
-                res[i + i2] = cast(Int) val; //lower half saved
-                c = val >> (Int.sizeof * 8);  //upper half becomes carry
-            }
-            
-            //if there's a carry, we add it
-            if (!faster && c)
-                foreach(i2, ref l; res[i+lhs.length .. $]) {
-                    val = c + l;
-                    l = cast(Int) val;
-                    c = val >> (Int.sizeof * 8);
-                    if (!c)
-                        break;
-                }
-        }
-        
-        return faster ? res[0 .. lhs.length]: res;
+        return cast(ulong[]) mul32(cast(uint[]) res, cast(const(uint)[]) lhs, cast(const(uint)[]) rhs, faster);
     }
 
     unittest {
@@ -274,6 +249,18 @@ version(D_InlineAsm_X86_64) {
     //stores the quotient in the result, and returns the remainder
     ulong div_small(ulong[] buff, const(ulong)[] n, ulong d, ulong[] result) pure nothrow @nogc {
         assert(n.length <= result.length);
+        
+        if (__ctfe || !UseAsm) {
+            if (d <= uint.max)
+                return div32_small(null, cast(const(uint)[]) n, cast(uint) d, cast(uint[]) result);
+            else {
+                assert(buff.length >= n.length*4);
+                assert(result.length == n.length);
+                ulong[1] _d = d;
+                div32(cast(uint[]) buff[n.length .. $], cast(const(uint)[]) n, cast(const(uint)[]) _d, cast(uint[]) result, cast(uint[]) buff[0 .. n.length]);
+                return buff[0];
+            }
+        }
         
         n = reduceArray(n);
         
@@ -340,98 +327,13 @@ version(D_InlineAsm_X86_64) {
     */
     void div(ulong[] buff, const(ulong)[] n, const(ulong)[] d, ulong[] q, ulong[] r) pure @nogc nothrow {
         assert(d, "Divide by zero");
-
-        //reduction for n, q & r
-        n = reduceArray(n);
-
-        //zeroize never reached area and shorten
-        q[n.length .. $] = 0;
-        r[n.length .. $] = 0;
-        q = q[0 .. n.length];
-        r = r[0 .. n.length];
         
-        foreach_reverse(i, Int divisor; d) {
-            if (!divisor)
-                continue;
-        //find most significant to divide by.
-            if (i == 0) {
-                //simple division, no guesswork
-                //call the simpler separated one once
-                r[1 .. $] = 0;
-                r[0] = div_small(n, divisor, q);
-            } else {
-                Int[] quotent_t = buff[0 .. n.length];
-                Int[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
-                bool dividend_sign = true;
-                size_t reduceby = bitsUsed(divisor), Size = n.length;
-                alias dividend = r;
-                dividend[] = n[];
-                q[] = 0;
-                
-                //removes custom reduceby, for speed testing
-                debug(NoDivReduce) { reduceby = 0; }
-                
-                //new divisor, should be fully filled
-                if (reduceby)
-                    divisor = rshift(mult_temp[0 .. d.length], d, reduceby)[--i];
-                    
-                do {
-                    if (reduceby)
-                        rshift(dividend, dividend, reduceby);
-                
-                    //divide
-                    div_small(dividend[i .. $], divisor, quotent_t); //remainder is junk
-
-                    //add/sub to our current total
-                    if (dividend_sign)
-                        add(q, quotent_t);
-                    else
-                        sub(q, quotent_t);
-
-                    //multiply
-                    mul(mult_temp, q, d, false);
-                    
-                    //subtract the difference
-                    sub(mult_temp, n);
-
-                    dividend_sign = mult_temp[$-1] == -1;   //quick dirty check
-                    
-                    if (dividend_sign) {
-                        dividend[] = ~mult_temp[0 .. Size];
-                        inc(dividend);
-                    } else
-                        dividend[] = mult_temp[0 .. Size];
-
-                } while(cmp(dividend, d) > 0);
-                
-                //off by one? Fix remainder
-                //in the rare case we get a fully divisible answer, this cmp check will see if that's the case.
-                if (!dividend_sign && cmp(dividend, null) > 0) {
-                    dec(q);
-                    r[] = d[];
-                    sub(r, mult_temp[0 .. Size]);
-                }
-                
-                break;
-            }
+        if(__ctfe || !UseAsm) {
+            //generic version will deal with ctfe
+            div32(cast(uint[]) buff, cast(const(uint)[]) n, cast(uint[]) d, cast(uint[]) q, cast(uint[]) r);
+            return;
         }
         
-        //out(void) not an option, so this is an extra check confirming d*q+r = n
-        debug {
-            assert(cmp(r, null) >= 0);
-            assert(cmp(r, d) < 0);
-            //no out(void)
-            mul(buff, q, d, false);
-            add(buff, r);
-            assert(cmp(buff, n) == 0);
-        }
-    }
-
-    /+
-    //
-    void div64(ulong[] buff, const(ulong)[] n, const(ulong)[] d, ulong[] q, ulong[] r) pure @nogc nothrow {
-        assert(d, "Divide by zero");
-
         //reduction for n, q & r
         n = reduceArray(n);
 
@@ -517,7 +419,6 @@ version(D_InlineAsm_X86_64) {
             assert(cmp(buff, n) == 0);
         }
     }
-    +/
 
     unittest {
         ulong[6] buff;
