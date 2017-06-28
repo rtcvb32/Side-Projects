@@ -4,7 +4,7 @@
  * Authors:
  *    Era Scarecrow <rtcvb32@yahoo.com>
  */
-module std.experimental.arbitraryint_gen32;
+module std.experimental.arbitraryint.gen32;
 
 import std.traits : isIntegral, isSigned, isUnsigned;
 
@@ -21,12 +21,8 @@ version(LDC) {} else {
 
 //internal type, should be half the size of the largest type we can work with
 //so uint if we can work with longs, and longs if we can work with cent
-alias IntUL = ulong;
-alias IntL = long;
 alias Int = uint;
-
 enum IntBits = Int.sizeof*8;
-enum IntLBits = IntL.sizeof*8;
 
 //forcibly turns off ASM coding.
 debug(NoAsm) {
@@ -438,8 +434,10 @@ unittest {
 
 //modular division using native types, part of the larger division code needed.
 //stores the quotient in the result, and returns the remainder
-Int div_small(const(Int)[] n, Int d, Int[] result) pure nothrow @nogc {
+uint div_small(uint[] buff, const(uint)[] n, uint d, uint[] result) pure nothrow @nogc {
+    enum IntBits = uint.sizeof * 8;
     assert(n.length <= result.length);
+//    assert(buff.length >= n.length*4, "buffer for temporaries, compatibility for 64bit and other versions");
     
     //shrink empty untouched of n that only slows it down.
     n = reduceArray(n);
@@ -500,32 +498,32 @@ unittest {
     
     //basically do 9 digits at a time as though we were printing, easiest verification with known factorial!34
     foreach_reverse(i, r; rem) {
-        assert(r == div_small(n[], 1_0000_00000, q[]));
+        assert(r == div_small(null, n[], 1_0000_00000, q[]));
         assert(cmp(q[], q_res[i]) == 0);
         n[] = q[];
     }
 }
 
 //left shift the value into the result. Value & result can be the same array.
-Int[] lshift(Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
+T[] lshift(T)(T[] result, const T[] value, size_t shiftby)
+if(isIntegral!T) {
+    enum TBits = T.sizeof * 8;
     assert(result.length == value.length);
-    assert(shiftby >= 0 && shiftby < (result.length*IntBits));
-    if (!__ctfe && UseAsm) {
-        version(none){}
-    }
+    assert(shiftby >= 0 && shiftby < (result.length * TBits));
 
-    size_t skip = shiftby / IntBits;    //how many whole blocks to move by
-    shiftby -= skip * IntBits;
-    IntUL t;
+    size_t skip = shiftby / TBits;    //how many whole blocks to move by
+    shiftby -= skip * TBits;
 
     if (!shiftby)
         result[skip .. $] = value[0 .. $-skip];
-    else
+    else {
+        T t, carry;
         foreach(i, ref v; result[skip .. $]) {
-            t |= (cast(IntUL)value[i]) << shiftby;
-            v = cast(Int) t;
-            t >>= IntBits;
+            t = (value[i] << shiftby) | carry;
+            carry = value[i] >>> (TBits - shiftby);
+            v = t;
         }
+    }
 
     result[0 .. skip] = 0;
     
@@ -533,29 +531,27 @@ Int[] lshift(Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc n
 }
 
 //right shift the value into the result.  Value & result can be the same array.
-Int[] rshift(Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
+T[] rshift(T)(T[] result, const T[] value, size_t shiftby, bool setcarry = false)
+if(isIntegral!T) {
+    enum TBits = T.sizeof * 8;
     assert(value.length == result.length);
-    assert(shiftby >= 0 && shiftby < (result.length*IntBits));
-    if (!__ctfe && UseAsm) {
-        version(none){}
-    }
+    assert(shiftby >= 0 && shiftby < (result.length*TBits));
 
-    size_t skip = shiftby / IntBits;    //how many whole blocks to move by
-    shiftby -= skip * IntBits;
+    size_t skip = shiftby / TBits;    //how many whole blocks to move by
+    shiftby -= skip * TBits;
 
     if (!shiftby)
         result[0 .. $-skip] = value[skip .. $];
     else {
-        size_t left = IntBits - shiftby;
-        IntUL t = setcarry ? -1L << (left+IntBits) : 0;
+        T t, carry = setcarry ? -1 << (TBits - shiftby) : 0;
         foreach_reverse(i, ref v; result[0 .. $-skip]) {
-            t |= (cast(IntUL)value[i+skip]) << left;
-            v = t >> IntBits;
-            t <<= IntBits;
+            t = (value[i+skip] >>> shiftby) | carry;
+            carry = value[i+skip] << (TBits - shiftby);
+            v = t;
         }
     }
 
-    result[$-skip .. $] = setcarry ? -1 : 0;
+    result[$-skip .. $] = setcarry ? T(-1) : 0;
 
     return result;
 }
@@ -573,9 +569,9 @@ unittest {
     assert(rshift(lhs, orig, 36) == [0x0fedcba9, 0]);
 
     //third argument, anything positive becomes the carry
-    assert(rshift(lhs, orig, 4, 1) == [0x87654321, 0xffedcba9]);
-    assert(rshift(lhs, orig, 32, 1000) == [0xfedcba98, 0xffffffff]);
-    assert(rshift(lhs, orig, 36, 0xffffff) == [0xffedcba9, 0xffffffff]);
+    assert(rshift(lhs, orig, 4, true) == [0x87654321, 0xffedcba9]);
+    assert(rshift(lhs, orig, 32, true) == [0xfedcba98, 0xffffffff]);
+    assert(rshift(lhs, orig, 36, true) == [0xffedcba9, 0xffffffff]);
     
     //test against same buffer, make sure it doesn't cause issues
     lhs = orig; assert(lshift(lhs, lhs, 4) == [0x65432100, 0xedcba987]);
@@ -586,9 +582,9 @@ unittest {
     lhs = orig; assert(rshift(lhs, lhs, 32) == [0xfedcba98, 0]);
     lhs = orig; assert(rshift(lhs, lhs, 36) == [0x0fedcba9, 0]);
 
-    lhs = orig; assert(rshift(lhs, lhs, 4, 1) == [0x87654321, 0xffedcba9]);
-    lhs = orig; assert(rshift(lhs, lhs, 32, 1000) == [0xfedcba98, 0xffffffff]);
-    lhs = orig; assert(rshift(lhs, lhs, 36, 0xffffff) == [0xffedcba9, 0xffffffff]);
+    lhs = orig; assert(rshift(lhs, lhs, 4, true) == [0x87654321, 0xffedcba9]);
+    lhs = orig; assert(rshift(lhs, lhs, 32, true) == [0xfedcba98, 0xffffffff]);
+    lhs = orig; assert(rshift(lhs, lhs, 36, true) == [0xffedcba9, 0xffffffff]);
 }
 
 /*  Perhaps the hardest part of this whole thing is the following function. Watched a video on a simple
@@ -621,7 +617,7 @@ void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nog
             //simple division, no guesswork
             //call the simpler separated one once
             r[1 .. $] = 0;
-            r[0] = div_small(n, divisor, q);
+            r[0] = div_small(null, n, divisor, q);
         } else {
             Int[] quotent_t = buff[0 .. n.length];
             Int[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
@@ -643,7 +639,7 @@ void div(Int[] buff, const(Int)[] n, const(Int)[] d, Int[] q, Int[] r) pure @nog
                     rshift(dividend, dividend, reduceby);
             
                 //divide
-                div_small(dividend[i .. $], divisor, quotent_t); //remainder is junk
+                div_small(null, dividend[i .. $], divisor, quotent_t); //remainder is junk
 
                 //add/sub to our current total
                 if (dividend_sign)

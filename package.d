@@ -24,12 +24,12 @@ private enum opSignMatters(string op) = (op == "/" || op == "%" || op == "*" || 
 //checks if a integral and not larger than our smaller int type
 private enum isSmallIntegral(T) = (isIntegral!T && T.sizeof <= Int.sizeof);
 
-version(none) { //D_InlineAsm_X86_64
-    import std.experimental.arbitraryint_amd64;
-    import std.experimental.arbitraryint_gen32 : bitsUsed, reduceArray, inc, dec, getSign, neg, add, sub;
+version(D_InlineAsm_X86_64) {
+    import std.experimental.arbitraryint.amd64;
+    import std.experimental.arbitraryint.gen32 : bitsUsed, reduceArray, inc, dec, getSign, neg, add, sub, lshift, rshift;
 } else {
     //generic
-    import std.experimental.arbitraryint_gen32;
+    import std.experimental.arbitraryint.gen32;
 }
 
 /**
@@ -187,7 +187,9 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 mul(m_tmp, lhs, rhs);
                 result.val[] = m_tmp[0 .. Size];
             } else static if (op == "/" || op == "%") {
-                T rem = div_small(lhs, rhs[0], result.val);
+                Int[Size*4] buff = void;    
+                
+                T rem = cast(T) div_small(buff, lhs, rhs[0], result.val);
                 
                 static if (op == "%") {
                     result.val[] = 0;
@@ -197,7 +199,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 mixin("result.val[0] "~op~"= other;");
             //unique int rhs only.
             } else static if (op == ">>>") {
-                rshift(result.val, this.val, other, 0);
+                rshift(result.val, this.val, other);
             } else static if (op == ">>") {
                 rshift(result.val, this.val, other, IsSigned ? (this.val[$-1] & (1<<(IntBits-1))) : 0);
             } else static if (op == "<<") {
@@ -511,7 +513,8 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
         foreach_reverse(i, ref ch; str) {
             if ((i+1) % digits == 0) {
                 //need both division and mod at the same time, so we'll use one function call
-                tmod = div_small(tmp.val, digitsMod, tmp.val);
+                assert(digitsMod <= uint.max);
+                tmod = div_small(null, tmp.val, digitsMod, tmp.val);
             }
             ch = digitstring[tmod%base];
             tmod /= base;

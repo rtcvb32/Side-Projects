@@ -4,11 +4,15 @@
  * Authors:
  *    Era Scarecrow <rtcvb32@yahoo.com>
  */
-module std.experimental.arbitraryint_amd64;
+module std.experimental.arbitraryint.amd64;
 
 import std.traits : isIntegral, isSigned, isUnsigned;
 import std.format : FormatSpec;
-import std.experimental.arbitraryint_gen32 : getSign, add, sub, inc, dec, reduceArray;
+import std.experimental.arbitraryint.gen32;
+
+alias mul32 = std.experimental.arbitraryint.gen32.mul;
+alias div32 = std.experimental.arbitraryint.gen32.div;
+alias div32_small = std.experimental.arbitraryint.gen32.div_small;
 
 /*  Internal functions, unlimited add/sub/inc/dec/rshift/lshift/cmp/icmp/div_small_div/mul on one or two arrays
 
@@ -23,18 +27,9 @@ version(LDC) {} else {
 version(D_InlineAsm_X86_64) {
     //internal type, should be half the size of the largest type we can work with
     //so uint if we can work with longs, and longs if we can work with cent
-    version(none) {
-        alias IntUL = ucent;
-        alias IntL = cent;
-        alias Int = ulong;
-    } else {
-        alias IntUL = ulong;
-        alias IntL = long;
-        alias Int = uint;
-    }
+    alias Int = ulong;
 
     enum IntBits = Int.sizeof*8;
-    enum IntLBits = IntL.sizeof*8;
 
     //forcibly turns off ASM coding.
     debug(NoAsm) {
@@ -281,7 +276,7 @@ version(D_InlineAsm_X86_64) {
 
     //modular division using native types, part of the larger division code needed.
     //stores the quotient in the result, and returns the remainder
-    ulong div_small(const(ulong)[] n, ulong d, ulong[] result) pure nothrow @nogc {
+    ulong div_small(ulong[] buff, const(ulong)[] n, ulong d, ulong[] result) pure nothrow @nogc {
         assert(n.length <= result.length);
         
         n = reduceArray(n);
@@ -334,91 +329,6 @@ version(D_InlineAsm_X86_64) {
             assert(cmp(q[], q_res[i]) == 0);
             n[] = q[];
         }
-    }
-
-    //left shift the value into the result. Value & result can be the same array.
-    Int[] lshift(Int[] result, const Int[] value, size_t shiftby) pure @safe @nogc nothrow {
-        assert(result.length == value.length);
-        assert(shiftby >= 0 && shiftby < (result.length*IntBits));
-        if (!__ctfe && UseAsm) {
-            version(none){}
-        }
-
-        size_t skip = shiftby / IntBits;    //how many whole blocks to move by
-        shiftby -= skip * IntBits;
-        IntUL t;
-
-        if (!shiftby)
-            result[skip .. $] = value[0 .. $-skip];
-        else
-            foreach(i, ref v; result[skip .. $]) {
-                t |= (cast(IntUL)value[i]) << shiftby;
-                v = cast(Int) t;
-                t >>= IntBits;
-            }
-
-        result[0 .. skip] = 0;
-        
-        return result;
-    }
-
-    //right shift the value into the result.  Value & result can be the same array.
-    Int[] rshift(Int[] result, const Int[] value, size_t shiftby, Int setcarry = 0) pure @safe @nogc nothrow {
-        assert(value.length == result.length);
-        assert(shiftby >= 0 && shiftby < (result.length*IntBits));
-        if (!__ctfe && UseAsm) {
-            version(none){}
-        }
-
-        size_t skip = shiftby / IntBits;    //how many whole blocks to move by
-        shiftby -= skip * IntBits;
-
-        if (!shiftby)
-            result[0 .. $-skip] = value[skip .. $];
-        else {
-            size_t left = IntBits - shiftby;
-            IntUL t = setcarry ? -1L << (left+IntBits) : 0;
-            foreach_reverse(i, ref v; result[0 .. $-skip]) {
-                t |= (cast(IntUL)value[i+skip]) << left;
-                v = t >> IntBits;
-                t <<= IntBits;
-            }
-        }
-
-        result[$-skip .. $] = setcarry ? -1 : 0;
-
-        return result;
-    }
-
-    unittest {
-        enum orig = [0x76543210, 0xfedcba98];
-        Int[2] lhs = orig;
-        
-        assert(lshift(lhs, orig, 4) == [0x65432100, 0xedcba987]);
-        assert(lshift(lhs, orig, 32) == [0, 0x76543210]);
-        assert(lshift(lhs, orig, 36) == [0, 0x65432100]);
-
-        assert(rshift(lhs, orig, 4) == [0x87654321, 0x0fedcba9]);
-        assert(rshift(lhs, orig, 32) == [0xfedcba98, 0]);
-        assert(rshift(lhs, orig, 36) == [0x0fedcba9, 0]);
-
-        //third argument, anything positive becomes the carry
-        assert(rshift(lhs, orig, 4, 1) == [0x87654321, 0xffedcba9]);
-        assert(rshift(lhs, orig, 32, 1000) == [0xfedcba98, 0xffffffff]);
-        assert(rshift(lhs, orig, 36, 0xffffff) == [0xffedcba9, 0xffffffff]);
-        
-        //test against same buffer, make sure it doesn't cause issues
-        lhs = orig; assert(lshift(lhs, lhs, 4) == [0x65432100, 0xedcba987]);
-        lhs = orig; assert(lshift(lhs, lhs, 32) == [0, 0x76543210]);
-        lhs = orig; assert(lshift(lhs, lhs, 36) == [0, 0x65432100]);
-
-        lhs = orig; assert(rshift(lhs, lhs, 4) == [0x87654321, 0x0fedcba9]);
-        lhs = orig; assert(rshift(lhs, lhs, 32) == [0xfedcba98, 0]);
-        lhs = orig; assert(rshift(lhs, lhs, 36) == [0x0fedcba9, 0]);
-
-        lhs = orig; assert(rshift(lhs, lhs, 4, 1) == [0x87654321, 0xffedcba9]);
-        lhs = orig; assert(rshift(lhs, lhs, 32, 1000) == [0xfedcba98, 0xffffffff]);
-        lhs = orig; assert(rshift(lhs, lhs, 36, 0xffffff) == [0xffedcba9, 0xffffffff]);
     }
 
     /*  Perhaps the hardest part of this whole thing is the following function. Watched a video on a simple
@@ -542,7 +452,7 @@ version(D_InlineAsm_X86_64) {
                 //simple division, no guesswork
                 //call the simpler separated one once
                 r[1 .. $] = 0;
-                r[0] = div_small(n, divisor, q);
+                r[0] = div_small(null, n, divisor, q);
             } else {
                 ulong[] quotent_t = buff[0 .. n.length];
                 ulong[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
@@ -564,7 +474,7 @@ version(D_InlineAsm_X86_64) {
                         rshift(dividend, dividend, reduceby);
                 
                     //divide
-                    div_small(dividend[i .. $], divisor, quotent_t); //remainder is junk
+                    div_small(null, dividend[i .. $], divisor, quotent_t); //remainder is junk
 
                     //add/sub to our current total
                     if (dividend_sign)
@@ -586,11 +496,11 @@ version(D_InlineAsm_X86_64) {
                     } else
                         dividend[] = mult_temp[0 .. Size];
 
-                } while(cmp64(dividend, d) > 0);
+                } while(cmp(dividend, d) > 0);
                 
                 //off by one? Fix remainder
                 //in the rare case we get a fully divisible answer, this cmp check will see if that's the case.
-                if (!dividend_sign && cmp64(dividend, null) > 0) {
+                if (!dividend_sign && cmp(dividend, null) > 0) {
                     dec(q);
                     r[] = d[];
                     sub(r, mult_temp[0 .. Size]);
@@ -602,12 +512,12 @@ version(D_InlineAsm_X86_64) {
         
         //out(void) not an option, so this is an extra check confirming d*q+r = n
         debug {
-            assert(cmp64(r, null) >= 0);
-            assert(cmp64(r, d) < 0);
+            assert(cmp(r, null) >= 0);
+            assert(cmp(r, d) < 0);
             //no out(void)
             mul(buff, q, d, false);
             add(buff, r);
-            assert(cmp64(buff, n) == 0);
+            assert(cmp(buff, n) == 0);
         }
     }
     +/
