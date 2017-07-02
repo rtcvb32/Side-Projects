@@ -187,7 +187,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 mul(m_tmp, lhs, rhs);
                 result.val[] = m_tmp[0 .. Size];
             } else static if (op == "/" || op == "%") {
-                Int[Size*4] buff = void;    
+                Int[Size*3] buff = void;    
                 
                 T rem = cast(T) div_small(buff, lhs, rhs[0], result.val);
                 
@@ -462,23 +462,24 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     }
 
     //for _toString
-    private enum Digits = 9;
+    private enum Digits = 9;    //per 4bytes
+    private enum DigitsBuff = (val.sizeof/4 + 1) * Digits;
     
     /// Returns a string base10 representation of the ArbritraryInt
     string toString() const pure nothrow {
-        char[Digits * (val.sizeof+1)] str;
+        char[DigitsBuff] str;
         return _toString(str).dup;
     }
     
     /// a non-GC variant
     void toString(scope void delegate (const(char)[]) sink) const {
-        char[Digits * (val.sizeof+1)] str;
+        char[DigitsBuff] str;
         sink(_toString(str));
     }
     
     ///format capable.
     void toString(scope void delegate (const(char)[]) sink, FormatSpec!char fmt) const {
-        char[Digits * (val.sizeof+1)] str;
+        char[DigitsBuff] str;
         switch(fmt.spec)
         {
             case 's':
@@ -541,8 +542,16 @@ unittest {
     //first check that the toString is correct, and basic assignments
     Cent c;
     UCent uc;
-    uint[4] f34 = [0x0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1];    //fact34
-    uc.val[] = cast(Int[]) f34;
+    
+    //should manage both Big & Little Endian types
+    static if(is(Int == ulong)) {
+        //fact34
+        Int[2] f34 = [0x445DA75B00000000L, 0xDE1BC4D19EFCAC82L];
+    } else {
+        Int[4] f34 = [0x0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1];
+    }
+    
+    uc.val[] = f34[];
     assert(uc.toString == "295232799039604140847618609643520000000");
     c = cast(Cent) uc;
     assert(c.toString == "-45049567881334322615755997788248211456");

@@ -198,7 +198,7 @@ version(D_InlineAsm_X86_64) {
     unittest {
         //fact34: 295 232799039 604140847 618609643 520000000
 
-        uint[4] n = [0, 0x445DA75B, 0x9EFCAC82, 0xDE1BC4D1], q;
+        ulong[2] n = [0x445DA75B00000000L, 0xDE1BC4D19EFCAC82L], q;
         ulong[] reml = [295, 232_79903_96041_40847L, 618_60964_35200_00000L];
         ulong[][] q_res = [
             [0L, 0],
@@ -207,10 +207,10 @@ version(D_InlineAsm_X86_64) {
         ];
         
         //18 digits version, more or less the same
-        uint[n.length * 4] buff;
-        foreach_reverse(i, r; reml) {
-            assert(r == div_small(cast(ulong[]) buff, cast(ulong[]) n, 1000_00000_00000_00000L, cast(ulong[]) q));
-            assert(cmp(cast(ulong[]) q, q_res[i]) == 0);
+        ulong[n.length * 3] buff;
+        foreach_reverse(i, ulong r; reml) {
+            assert(r == div_small(buff, n, 1000_00000_00000_00000L, q));
+            assert(cmp(q, q_res[i]) == 0);
             n[] = q[];
         }
     }
@@ -315,7 +315,7 @@ version(D_InlineAsm_X86_64) {
     }
 
     unittest {
-        ulong[6] buff;
+        ulong[8] buff;
         ulong[2]  fact13p1=[0x17328CC01L, 0],
                 fact21 = [0xC5077D36B8C40000L, 2],
                 fact28 = [0xAD2CD59DAE000000L, 0x3D925BA47L],
