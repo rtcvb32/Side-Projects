@@ -509,6 +509,8 @@ if(isIntegral!T) {
     enum TBits = T.sizeof * 8;
     assert(result.length == value.length);
     assert(shiftby >= 0 && shiftby < (result.length * TBits));
+    if(!shiftby && result is value)
+        return result;
 
     size_t skip = shiftby / TBits;    //how many whole blocks to move by
     shiftby -= skip * TBits;
@@ -535,6 +537,8 @@ if(isIntegral!T) {
     enum TBits = T.sizeof * 8;
     assert(value.length == result.length);
     assert(shiftby >= 0 && shiftby < (result.length*TBits));
+    if(!shiftby && result is value)
+        return result;
 
     size_t skip = shiftby / TBits;    //how many whole blocks to move by
     shiftby -= skip * TBits;
@@ -542,7 +546,7 @@ if(isIntegral!T) {
     if (!shiftby)
         result[0 .. $-skip] = value[skip .. $];
     else {
-        T t, carry = setcarry ? -1 << (TBits - shiftby) : 0;
+        T t, carry = setcarry ? T(-1) << (TBits - shiftby) : 0;
         foreach_reverse(i, ref v; result[0 .. $-skip]) {
             t = (value[i+skip] >>> shiftby) | carry;
             carry = value[i+skip] << (TBits - shiftby);
@@ -559,28 +563,34 @@ unittest {
     enum orig = [0x76543210, 0xfedcba98];
     uint[2] lhs = orig;
     
-    assert(lshift(lhs, orig, 4) == [0x65432100, 0xedcba987]);
-    assert(lshift(lhs, orig, 32) == [0, 0x76543210]);
-    assert(lshift(lhs, orig, 36) == [0, 0x65432100]);
+    lhs = 0; assert(lshift(lhs, orig, 0) == [0x76543210, 0xfedcba98]);
+    lhs = 0; assert(lshift(lhs, orig, 4) == [0x65432100, 0xedcba987]);
+    lhs = 0; assert(lshift(lhs, orig, 32) == [0, 0x76543210]);
+    lhs = 0; assert(lshift(lhs, orig, 36) == [0, 0x65432100]);
 
-    assert(rshift(lhs, orig, 4) == [0x87654321, 0x0fedcba9]);
-    assert(rshift(lhs, orig, 32) == [0xfedcba98, 0]);
-    assert(rshift(lhs, orig, 36) == [0x0fedcba9, 0]);
+    lhs = 0; assert(rshift(lhs, orig, 0) == [0x76543210, 0xfedcba98]);
+    lhs = 0; assert(rshift(lhs, orig, 4) == [0x87654321, 0x0fedcba9]);
+    lhs = 0; assert(rshift(lhs, orig, 32) == [0xfedcba98, 0]);
+    lhs = 0; assert(rshift(lhs, orig, 36) == [0x0fedcba9, 0]);
 
     //third argument, anything positive becomes the carry
-    assert(rshift(lhs, orig, 4, true) == [0x87654321, 0xffedcba9]);
-    assert(rshift(lhs, orig, 32, true) == [0xfedcba98, 0xffffffff]);
-    assert(rshift(lhs, orig, 36, true) == [0xffedcba9, 0xffffffff]);
+    lhs = 0; assert(rshift(lhs, orig, 0, true) == [0x76543210, 0xfedcba98]);
+    lhs = 0; assert(rshift(lhs, orig, 4, true) == [0x87654321, 0xffedcba9]);
+    lhs = 0; assert(rshift(lhs, orig, 32, true) == [0xfedcba98, 0xffffffff]);
+    lhs = 0; assert(rshift(lhs, orig, 36, true) == [0xffedcba9, 0xffffffff]);
     
     //test against same buffer, make sure it doesn't cause issues
+    lhs = orig; assert(lshift(lhs, lhs, 0) == [0x76543210, 0xfedcba98]);
     lhs = orig; assert(lshift(lhs, lhs, 4) == [0x65432100, 0xedcba987]);
     lhs = orig; assert(lshift(lhs, lhs, 32) == [0, 0x76543210]);
     lhs = orig; assert(lshift(lhs, lhs, 36) == [0, 0x65432100]);
 
+    lhs = orig; assert(rshift(lhs, lhs, 0) == [0x76543210, 0xfedcba98]);
     lhs = orig; assert(rshift(lhs, lhs, 4) == [0x87654321, 0x0fedcba9]);
     lhs = orig; assert(rshift(lhs, lhs, 32) == [0xfedcba98, 0]);
     lhs = orig; assert(rshift(lhs, lhs, 36) == [0x0fedcba9, 0]);
 
+    lhs = orig; assert(rshift(lhs, lhs, 0, true) == [0x76543210, 0xfedcba98]);
     lhs = orig; assert(rshift(lhs, lhs, 4, true) == [0x87654321, 0xffedcba9]);
     lhs = orig; assert(rshift(lhs, lhs, 32, true) == [0xfedcba98, 0xffffffff]);
     lhs = orig; assert(rshift(lhs, lhs, 36, true) == [0xffedcba9, 0xffffffff]);
