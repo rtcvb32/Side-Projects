@@ -8,6 +8,7 @@ module std.experimental.arbitraryint;
 
 import std.traits : isIntegral, isSigned, isUnsigned;
 import std.format : FormatSpec;
+import std.experimental.arbitraryint.gen32;
 
 /// Unsigned cent implimentation
 alias UCent = ArbitraryInt!(128, false);
@@ -26,11 +27,13 @@ private enum isSmallIntegral(T) = (isIntegral!T && T.sizeof <= Int.sizeof);
 
 version(D_InlineAsm_X86_64) {
     import std.experimental.arbitraryint.amd64;
-    import std.experimental.arbitraryint.gen32 : bitsUsed, reduceArray, inc, dec, getSign, neg, add, sub, lshift, rshift;
+    private alias Int = ulong;
 } else {
     //generic
-    import std.experimental.arbitraryint.gen32;
+    private alias Int = uint;
 }
+
+private enum IntBits = Int.sizeof*8;
 
 /**
   *  Template for Arbitrary Int. Creates a simulated/emulated byte as long as it's multiple of 64 bits

@@ -20,13 +20,7 @@ version(LDC) {} else {
     pragma(inline, true):
 }
 
-version(D_InlineAsm_X86_64) {
-    //internal type, should be half the size of the largest type we can work with
-    //so uint if we can work with longs, and longs if we can work with cent
-    alias Int = ulong;
-
-    enum IntBits = Int.sizeof*8;
-
+version(all) {
     //forcibly turns off ASM coding.
     debug(NoAsm) {
         pragma(msg, "Debug=NoAsm - Division is really really slow on 64bit CTFE compatible.");
@@ -348,6 +342,4 @@ version(D_InlineAsm_X86_64) {
         assert(r == [0x59765F5, 0]);
         */
     }
-} else {
-    static assert(false, "This shouldn't be included, you aren't using x86_64 code");
 }

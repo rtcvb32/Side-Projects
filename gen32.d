@@ -19,11 +19,6 @@ version(LDC) {} else {
     pragma(inline, true):
 }
 
-//internal type, should be half the size of the largest type we can work with
-//so uint if we can work with longs, and longs if we can work with cent
-alias Int = uint;
-enum IntBits = Int.sizeof*8;
-
 //forcibly turns off ASM coding.
 debug(NoAsm) {
     enum UseAsm = false;
