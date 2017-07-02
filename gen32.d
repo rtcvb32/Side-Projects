@@ -295,6 +295,7 @@ unittest {
     assert(sub(lhs, [1]) == [-1, -1, -1]);
 }
 
+//increase value by 1, handle carry if any
 T[] inc(T)(T[] val) pure @safe @nogc nothrow
 if(isIntegral!T && isUnsigned!T) {
     foreach(ref v; val) {
@@ -305,6 +306,7 @@ if(isIntegral!T && isUnsigned!T) {
     return val;
 }
 
+//decrease value by 1, handle carry if any
 T[] dec(T)(T[] val) pure @safe @nogc nothrow
 if(isIntegral!T && isUnsigned!T) {
     foreach(ref v; val) {
@@ -433,7 +435,7 @@ unittest {
 uint div_small(uint[] buff, const(uint)[] n, uint d, uint[] result) pure nothrow @nogc {
     enum IntBits = uint.sizeof * 8;
     assert(n.length <= result.length);
-//    assert(buff.length >= n.length*4, "buffer for temporaries, compatibility for 64bit and other versions");
+//buffer unused, more for transparent compatibility with backup CTFE workaround for amd64 code
     
     //shrink empty untouched of n that only slows it down.
     n = reduceArray(n);
