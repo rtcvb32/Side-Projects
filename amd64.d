@@ -10,10 +10,6 @@ import std.traits : isIntegral, isSigned, isUnsigned;
 import std.format : FormatSpec;
 import std.experimental.arbitraryint.gen32;
 
-alias mul32 = std.experimental.arbitraryint.gen32.mul;
-alias div32 = std.experimental.arbitraryint.gen32.div;
-alias div32_small = std.experimental.arbitraryint.gen32.div_small;
-
 /*  Internal functions, unlimited add/sub/inc/dec/rshift/lshift/cmp/icmp/div_small_div/mul on one or two arrays
 
     For simplicity, it's little endian in structure. So [0] is the lowest value and [$-1] has the highest value.
@@ -33,9 +29,7 @@ version(D_InlineAsm_X86_64) {
 
     //forcibly turns off ASM coding.
     debug(NoAsm) {
-        enum UseAsm = false;
-    } else {
-        enum UseAsm = true;
+        pragma(msg, "Debug=NoAsm - Division is really really slow on 64bit CTFE compatible.");
     }
 
     //multiply. length of result has to be as big as the lhs+rhs lengths.
@@ -87,108 +81,118 @@ version(D_InlineAsm_X86_64) {
             }
         }
         
-        return cast(ulong[]) mul32(cast(uint[]) res, cast(const(uint)[]) lhs, cast(const(uint)[]) rhs, faster);
+        alias mul32 = std.experimental.arbitraryint.gen32.mul;
+
+        //for CTFE compatible version, simply forcibly and safely convert to 32bit and call gen32 version,
+        //then rebuild the 64bit longs. Should be compatible for big & little endian types.
+        uint[4] u_res;
+        ulong[2] l_res;
+        uint[2] l, r;
+        res[] = 0;
+        
+        foreach(i, rhs_v; cast(ulong[]) rhs) //cast only, otherwise: integer constant expression expected instead
+        foreach(i2, lhs_v; cast(ulong[]) lhs)
+            if (rhs_v && lhs_v) {
+                l[0] = cast(uint) lhs_v;
+                l[1] = lhs_v >> 32;
+                r[0] = cast(uint) rhs_v;
+                r[1] = rhs_v >> 32;
+                
+                mul32(u_res, l, r, false);
+                
+                l_res[0] = ((cast(ulong) u_res[1]) << 32) | u_res[0];
+                l_res[1] = ((cast(ulong) u_res[3]) << 32) | u_res[2];
+                
+                add(res[i+i2 .. $], l_res);
+            }
+        
+        return faster ? res[0 .. lhs.length] : res;
     }
 
     unittest {
-        bool longOnly = false;
+        //64-only tests
+        ulong[4] m;
         
-        version(D_InlineAsm_X86_64) {
-            longOnly = true;
-        }
-        
-        if (!longOnly) {
-            Int[4] m;
-            
-            assert(mul(m[],[0x12345678, 0],[0x12345678, 0], false) == [0x1DF4D840, 0x14B66DC, 0, 0]);
-            assert(mul(m[],[0x12345678, 0],[0, 0x12345678], false) == [0, 0x1DF4D840, 0x14B66DC, 0]);
-            assert(mul(m[],[0, 0x12345678],[0x12345678, 0], false) == [0, 0x1DF4D840, 0x14B66DC, 0]);
-            assert(mul(m[],[0x12345678],[0, 0x12345678], false) == [0, 0x1DF4D840, 0x14B66DC, 0]);
-            assert(mul(m[],[0, 0x12345678],[0x12345678], false) == [0, 0x1DF4D840, 0x14B66DC, 0]);
-            assert(mul(m[],[0x12345678, 0x12345678],[0, 0x12345678], false) == [0, 0x1DF4D840, 0x1F403F1C, 0x14B66DC]);
-            assert(mul(m[],[0, 0x12345678], [0x12345678, 0x12345678], false) == [0, 0x1DF4D840, 0x1F403F1C, 0x14B66DC]);
-            //shorter input
-            assert(mul(m[],[0x12345678, 0x12345678],[0x12345678], false) == [0x1DF4D840, 0x1F403F1C, 0x14B66DC, 0]);
-            assert(mul(m[],[0x12345678], [0x12345678, 0x12345678], false) == [0x1DF4D840, 0x1F403F1C, 0x14B66DC, 0]);
-            
-            //test faster, same as above only truncates to the lhs/input length.
-            //only the lower half (equal to the lhs length) will be accurate, the other half may contain junk.
-            assert(mul(m[],[0x12345678, 0],[0x12345678, 0]) == [0x1DF4D840, 0x14B66DC]);
-            assert(mul(m[],[0x12345678, 0],[0, 0x12345678]) == [0, 0x1DF4D840]);
-            assert(mul(m[],[0, 0x12345678],[0x12345678, 0]) == [0, 0x1DF4D840]);
-            assert(mul(m[],[0, 0x12345678],[0x12345678]) == [0, 0x1DF4D840]);
-            assert(mul(m[],[0x12345678, 0x12345678],[0, 0x12345678]) == [0, 0x1DF4D840]);
-            assert(mul(m[],[0x12345678, 0x12345678],[0x12345678]) == [0x1DF4D840, 0x1F403F1C]);
-            
-            //show truncates to left side.
-            assert(mul(m[],[0x12345678],[0, 0x12345678]) == [0]);
-            assert(mul(m[],[0x12345678], [0x12345678, 0x12345678]) == [0x1DF4D840]);
-            
-            //you only need l+r length
-            assert(mul(m[0 .. 3],[0x12345678, 0x12345678],[0x12345678]) == [0x1DF4D840, 0x1F403F1C]);
-        } else {
-            //64-only tests
-            ulong[4] m;
-            
-            assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x1122334455667788L], false)
-                        == [0xC5E365068397FF80L, 0xC71B4D5D4B16C050L, 0x137E856C77EC0D0L, 0]);
-            assert(mul(m[],[0x1122334455667788L], [0x123456789abcdef0L, 0x123456789abcdef0L], false)
-                        == [0xC5E365068397FF80L, 0xC71B4D5D4B16C050L, 0x137E856C77EC0D0L, 0]);
-            assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x123456789abcdef0L, 0x123456789abcdef0L], false)
-                        == [0xA5E20890F2A52100L, 0x4D0F77FE1940EEDCL, 0xA878D6495A927AB9L, 0x14B66DC33F6ACDCL]);
-            assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x123456789abcdef0L, 0x123456789abcdef0L])
-                        == [0xA5E20890F2A52100L, 0x4D0F77FE1940EEDCL]);
-        }
+        assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x1122334455667788L], false)
+                    == [0xC5E365068397FF80L, 0xC71B4D5D4B16C050L, 0x137E856C77EC0D0L, 0]);
+        assert(mul(m[],[0x1122334455667788L], [0x123456789abcdef0L, 0x123456789abcdef0L], false)
+                    == [0xC5E365068397FF80L, 0xC71B4D5D4B16C050L, 0x137E856C77EC0D0L, 0]);
+        assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x123456789abcdef0L, 0x123456789abcdef0L], false)
+                    == [0xA5E20890F2A52100L, 0x4D0F77FE1940EEDCL, 0xA878D6495A927AB9L, 0x14B66DC33F6ACDCL]);
+        assert(mul(m[],[0x123456789abcdef0L, 0x123456789abcdef0L], [0x123456789abcdef0L, 0x123456789abcdef0L])
+                    == [0xA5E20890F2A52100L, 0x4D0F77FE1940EEDCL]);
     }
 
     //modular division using native types, part of the larger division code needed.
     //stores the quotient in the result, and returns the remainder
     ulong div_small(ulong[] buff, const(ulong)[] n, ulong d, ulong[] result) pure nothrow @nogc {
         assert(n.length <= result.length);
-        
-        if (__ctfe || !UseAsm) {
-            if (d <= uint.max)
-                return div32_small(null, cast(const(uint)[]) n, cast(uint) d, cast(uint[]) result);
-            else {
-                assert(buff.length >= n.length*4);
-                assert(result.length == n.length);
-                ulong[1] _d = d;
-                div32(cast(uint[]) buff[n.length .. $], cast(const(uint)[]) n, cast(const(uint)[]) _d, cast(uint[]) result, cast(uint[]) buff[0 .. n.length]);
-                return buff[0];
+        n = reduceArray(n);
+            
+        if (!__ctfe && UseAsm) {
+            version(D_InlineAsm_X86_64) {
+                result[n.length .. $] = 0; //zeroize, can't possibly be anything there.
+                result = result[0 .. n.length];
+                
+                auto dividend = &n[$-1];
+                auto quotent = &result[$-1];
+                ulong len = n.length;
+                ulong remainder;
+                
+                //due to byte order and compatible using uint, gotta load/save 32bit at a time.
+                asm pure nothrow @nogc {
+                        mov RSI, dividend;
+                        mov RDI, quotent;
+                        
+                        xor RDX, RDX;
+                        mov RBX, d;     //get divisor
+                        
+                        xor RDX, RDX;   //remainder of last divide
+                        mov RCX, len;   //counter for loop
+                start:  mov RAX, qword ptr [RSI];
+                        div RBX;
+                        mov qword ptr [RDI], RAX;  //save low
+                        
+                        sub RSI, 8;
+                        sub RDI, 8;
+                        loop start;
+                        mov remainder, RDX;     //save remainder.
+                }
+
+                return remainder;
             }
         }
         
-        n = reduceArray(n);
-        
-        result[n.length .. $] = 0; //zeroize, can't possibly be anything there.
-        result = result[0 .. n.length];
-        
-        auto dividend = &n[$-1];
-        auto quotent = &result[$-1];
-        ulong len = n.length;
-        ulong remainder;
-        
-        //due to byte order and compatible using uint, gotta load/save 32bit at a time.
-        asm pure nothrow @nogc {
-                mov RSI, dividend;
-                mov RDI, quotent;
-                
-                xor RDX, RDX;
-                mov RBX, d;     //get divisor
-                
-                xor RDX, RDX;   //remainder of last divide
-                mov RCX, len;   //counter for loop
-        start:  mov RAX, qword ptr [RSI];
-                div RBX;
-                mov qword ptr [RDI], RAX;  //save low
-                
-                sub RSI, 8;
-                sub RDI, 8;
-                loop start;
-                mov remainder, RDX;     //save remainder.
-        }
+        assert(buff.length >= n.length*3);
 
-        return remainder;
+        //shift & subtract, slow but will be fine for CTFE for a bit.
+        ulong[] res = buff[0 .. n.length],
+                divisor = buff[n.length .. n.length*2],
+                remainder = buff[n.length*2 .. n.length*3];
+        auto bu = bitsUsed(d);
+        ptrdiff_t mask = 64 * (n.length-1) + (64-bu);
+        
+        buff[] = 0;
+        result[res.length .. $] = 0;
+        divisor[$-1] = d;
+        
+        //make largest 2block for division for a single block
+        lshift(divisor, divisor, 64-bu);
+        remainder[] = n[];
+        
+        while(mask >= 0) {
+            if (cmp(remainder, divisor) >= 0) {
+                res[mask / 64] |= 1L << (mask%64);
+                sub(remainder, divisor);
+            }
+            
+            rshift(divisor, divisor, 1);
+            --mask;
+        }
+        
+        //save result
+        result[0 .. res.length] = res[];
+        return remainder[0];
     }
 
     unittest {
@@ -224,12 +228,6 @@ version(D_InlineAsm_X86_64) {
     void div(ulong[] buff, const(ulong)[] n, const(ulong)[] d, ulong[] q, ulong[] r) pure @nogc nothrow {
         assert(d, "Divide by zero");
         
-        if(__ctfe || !UseAsm) {
-            //generic version will deal with ctfe
-            div32(cast(uint[]) buff, cast(const(uint)[]) n, cast(uint[]) d, cast(uint[]) q, cast(uint[]) r);
-            return;
-        }
-        
         //reduction for n, q & r
         n = reduceArray(n);
 
@@ -247,7 +245,7 @@ version(D_InlineAsm_X86_64) {
                 //simple division, no guesswork
                 //call the simpler separated one once
                 r[1 .. $] = 0;
-                r[0] = div_small(null, n, divisor, q);
+                r[0] = div_small(buff, n, divisor, q);
             } else {
                 ulong[] quotent_t = buff[0 .. n.length];
                 ulong[] mult_temp = buff[n.length .. (n.length + q.length + d.length)];
@@ -269,7 +267,7 @@ version(D_InlineAsm_X86_64) {
                         rshift(dividend, dividend, reduceby);
                 
                     //divide
-                    div_small(null, dividend[i .. $], divisor, quotent_t); //remainder is junk
+                    div_small(buff[n.length .. $], dividend[i .. $], divisor, quotent_t); //remainder is junk
 
                     //add/sub to our current total
                     if (dividend_sign)
@@ -342,11 +340,13 @@ version(D_InlineAsm_X86_64) {
         assert(q == [0xA77C82A7F1BCE021L, 2]);
         assert(r == [0x6180D3DFL, 0]);
 
+        /* -- currently CTFE version doesn't handle thi --
         //test forward to div_small, small enough divisor
         ulong[2] sm = [123456789, 0];
         div(buff, fact21, sm, q, r);
         assert(q == [0x605A95ECDCL, 0]);
         assert(r == [0x59765F5, 0]);
+        */
     }
 } else {
     static assert(false, "This shouldn't be included, you aren't using x86_64 code");

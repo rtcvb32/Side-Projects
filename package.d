@@ -500,6 +500,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     private char[] _toString(char[] str, Int base=10, Int digits=Digits) const pure nothrow @nogc {
         static immutable string digitstring = "0123456789ABCDEF";
         Int digitsMod = base^^digits;
+        Int[Size*3] buff = void;   //buffer just in case division requires it
 
         ArbitraryInt tmp = this;
         Int tmod;
@@ -514,7 +515,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             if ((i+1) % digits == 0) {
                 //need both division and mod at the same time, so we'll use one function call
                 assert(digitsMod <= uint.max);
-                tmod = div_small(null, tmp.val, digitsMod, tmp.val);
+                tmod = div_small(buff, tmp.val, digitsMod, tmp.val);
             }
             ch = digitstring[tmod%base];
             tmod /= base;
@@ -790,4 +791,30 @@ unittest {
     //check that we can't downcast
     assert(__traits(compiles, l = c) == false);
 
+    //check ctfe
+    //only * and / have asm, so they are the only ones to check
+
+    enum ctfe_mul = (Cent(0x123456789abcdefL) * Cent(50)),
+         ctfe_div = (Cent(0x123456789abcdefL) / Cent(50)),
+         ctfe_mod = (Cent(0x123456789abcdefL) % Cent(50)),
+         ctfe_add = (Cent(0x123456789abcdefL) + Cent(0xffff)),
+         ctfe_sub = (Cent(0x123456789abcdefL) - Cent(0xffff)),
+         ctfe_add2 = (Cent(0x123456789abcdefL) + 0xffff),
+         ctfe_sub2 = (Cent(0x123456789abcdefL) - 0xffff),
+         ctfe_lsh = (Cent(0x123456789abcdefL) << 4),
+         ctfe_rsh = (Cent(-0x123456789abcdefL) >> 4),
+         ctfe_rsh2 = (Cent(-0x123456789abcdefL) >>> 4),
+         ctfe_pow = (Cent(3) ^^ 80);
+         
+    assert(ctfe_mul == Cent(0x123456789abcdefL) * Cent(50));
+    assert(ctfe_div == Cent(0x123456789abcdefL) / Cent(50));
+    assert(ctfe_mod == Cent(0x123456789abcdefL) % Cent(50));
+    assert(ctfe_add == Cent(0x123456789abcdefL) + Cent(0xffff));
+    assert(ctfe_sub == Cent(0x123456789abcdefL) - Cent(0xffff));
+    assert(ctfe_add2 == Cent(0x123456789abcdefL) + 0xffff);
+    assert(ctfe_sub2 == Cent(0x123456789abcdefL) - 0xffff);
+    assert(ctfe_lsh == Cent(0x123456789abcdefL) << 4);
+    assert(ctfe_rsh == Cent(-0x123456789abcdefL) >> 4);
+    assert(ctfe_rsh2 == Cent(-0x123456789abcdefL) >>> 4);
+    assert(ctfe_pow == Cent(3) ^^ 80);
 }
