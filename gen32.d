@@ -90,7 +90,8 @@ unittest {
 }
 
 //like cmp, only reduces both signed flags before considering comparing.
-ptrdiff_t icmp(const(uint)[] lhs, const(uint)[] rhs) pure @safe nothrow @nogc {
+ptrdiff_t icmp(T)(const(T)[] lhs, const(T)[] rhs)
+if(isIntegral!T) {
     size_t signFlags = (getSign(lhs) ? 2 : 0) | (getSign(rhs) ? 1 : 0);
 
     if (signFlags == 2) return -1;
@@ -118,7 +119,8 @@ ptrdiff_t icmp(const(uint)[] lhs, const(uint)[] rhs) pure @safe nothrow @nogc {
 
 //basic comparison, any two lengths you want.
 //the larger length of the two is always larger (after reduction).
-ptrdiff_t cmp(const(uint)[] lhs, const(uint)[] rhs) pure @safe nothrow @nogc {
+ptrdiff_t cmp(T)(const(T)[] lhs, const(T)[] rhs)
+if(isIntegral!T) {
     //reduce
     lhs = reduceArray(lhs);
     rhs = reduceArray(rhs);
