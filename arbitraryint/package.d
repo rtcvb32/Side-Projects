@@ -415,7 +415,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     /**
       * simple cast for bool, or if zero/non-zero
       */
-    bool opCast(T)()
+    bool opCast(T)() const
     if (is(T == bool)){
         foreach(v; val) {
             if (v)
@@ -427,7 +427,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     /**
       * Forcibly converts to a smaller numberic type.
       */
-    T opCast(T)()
+    T opCast(T)() const
     if (isIntegral!T){
         static if (isSmallIntegral!T) {
             return cast(T) val[0];
@@ -448,7 +448,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     /**
       * Allows up/down casting of any Arbitrary type, though you may lose information.
       */
-    T opCast(T)()
+    T opCast(T)() const
     if (isArbitraryInt!T) {
         T t;
         static if (T.Size > Size) {
