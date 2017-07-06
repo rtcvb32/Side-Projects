@@ -780,3 +780,46 @@ unittest {
     assert(neg(val) == [0xAAAAAAAB, 0xAAAAAAAA]);
     assert(neg(val) == [0x55555555, 0x55555555]);
 }
+
+debug {
+    //mostly for debugging purposes... so yeah...
+    string arrToString(T)(const(T)[] inp) nothrow @nogc {
+        static immutable string digitstring = "0123456789ABCDEF";
+        static char[T.sizeof*1024*8 / 3] str;
+        T[1024] buff;
+        T[] n = buff[0 .. inp.length], q = buff[inp.length .. inp.length*2], b = buff[inp.length*2 .. $];
+        n[] = inp[];
+        int mod;
+        
+        //ensures it's large enough for this set of tests, which is incredibly large for internal tests
+        assert(b.length >= n.length*4);
+        
+        static if (is(T==uint)) {
+            import std.experimental.arbitraryint.gen32 : div_small;
+        } else {
+            import std.experimental.arbitraryint.amd64 : div_small;
+        }
+        
+        foreach_reverse(i, ref ch; str) {
+            mod = cast(int) div_small(b, n, 10u, q);
+            ch = digitstring[mod];
+            n[] = q[];
+            while(n.length && !n[$-1]) {
+                n = n[0 .. $-1];
+                q = q[0 .. $-1];
+            }
+            if (!n.length)
+                return cast(string) str[i .. $];
+        }
+        
+        assert(0, "Ran out of characters for output/buffer");
+    }
+    
+    unittest {
+        uint[2] x = [0x55555555, 0x55555555];
+        ulong[2] y = [0x5555555555555555L, 0x5555555555555555L];
+
+        assert(x.arrToString == "6148914691236517205");
+        assert(y.arrToString == "113427455640312821154458202477256070485");
+    }
+}
