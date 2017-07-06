@@ -222,7 +222,8 @@ version(all) {
     */
     void div(ulong[] buff, const(ulong)[] n, const(ulong)[] d, ulong[] q, ulong[] r) pure @nogc nothrow {
         assert(d, "Divide by zero");
-        
+        assert(buff.length >= n.length*3, "neccesary buffers missing");
+
         //reduction for n, q & r
         n = reduceArray(n);
 
@@ -305,7 +306,7 @@ version(all) {
             //no out(void)
             mul(buff, q, d, false);
             add(buff, r);
-            assert(cmp(buff, n) == 0);
+            assert(cmp(buff[0 .. n.length], n) == 0);
         }
     }
 

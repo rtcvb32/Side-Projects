@@ -76,7 +76,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     this(T)(ref const(T) other)
     if (isArbitraryInt!T) {
         static if (T.IsSigned) {
-            if (getSign(other))
+            if (getSign(other.val))
                 this.val[] = -1;
         }
     
@@ -247,8 +247,8 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             } else static if (op == "/" || op == "%") {
                 import std.algorithm : max;
                 enum SIZE = max(Size, T.Size);
-                Int[SIZE*3] buff = void;
-                Int[Size] qr = void;
+                Int[SIZE*4] buff = void;
+                Int[SIZE] qr = void;
                 
                 static if (op == "/") {
                     div(buff, lhs, rhs, result.val, qr);
