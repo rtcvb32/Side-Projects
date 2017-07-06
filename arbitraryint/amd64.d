@@ -63,7 +63,7 @@ version(all) {
                             jnc nocarry;
                             mov RAX, RDI;
                     carry:  add RDI, 8;
-                            add qword ptr [RDI + 16], 1;
+                            add qword ptr [RDI + 8], 1;
                             jc carry;
                             mov RDI, RAX;
                     //advance
