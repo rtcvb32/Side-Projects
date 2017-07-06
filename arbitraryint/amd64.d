@@ -33,7 +33,8 @@ version(all) {
         assert(isUnsigned!ulong);
         assert(res.length >= lhs.length + rhs.length);
 
-        res[0 .. (faster ? lhs.length : $)] = 0;
+        import std.algorithm : max;
+        res[0 .. (faster ? max(lhs.length, rhs.length) : $)] = 0;
         
         if (!__ctfe && UseAsm) {
             version(D_InlineAsm_X86_64) {
