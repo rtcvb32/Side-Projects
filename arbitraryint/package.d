@@ -62,7 +62,6 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             static assert(val.sizeof >= T.sizeof, "Internal type is larger than Arbitrary Int...");
 
             size_t count = T.sizeof / Int.sizeof;
-            T r = 0;
             foreach(ref _v; val[0 .. count]) {
                 _v = cast(Int) v;
                 v >>= IntBits;
@@ -73,7 +72,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
     }
     
     ///Takes any ArbitraryInt data, although it might not fit
-    this(T)(ref const(T) other)
+    this(T)(auto ref const(T) other)
     if (isArbitraryInt!T) {
         static if (T.IsSigned) {
             if (getSign(other.val))
