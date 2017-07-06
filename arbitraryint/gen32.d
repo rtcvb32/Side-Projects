@@ -515,9 +515,10 @@ if(isIntegral!T) {
     size_t skip = shiftby / TBits;    //how many whole blocks to move by
     shiftby -= skip * TBits;
 
-    if (!shiftby)
-        result[skip .. $] = value[0 .. $-skip];
-    else {
+    if (!shiftby) {
+        foreach(i, v; value[0 .. $-skip])
+            result[skip + i] = v;
+    } else {
         T t, carry;
         foreach(i, ref v; result[skip .. $]) {
             t = (value[i] << shiftby) | carry;
@@ -543,9 +544,10 @@ if(isIntegral!T) {
     size_t skip = shiftby / TBits;    //how many whole blocks to move by
     shiftby -= skip * TBits;
 
-    if (!shiftby)
-        result[0 .. $-skip] = value[skip .. $];
-    else {
+    if (!shiftby) {
+        foreach(i, v; value[skip .. $])
+            result[i] = v;
+    } else {
         T t, carry = setcarry ? T(-1) << (TBits - shiftby) : 0;
         foreach_reverse(i, ref v; result[0 .. $-skip]) {
             t = (value[i+skip] >>> shiftby) | carry;
