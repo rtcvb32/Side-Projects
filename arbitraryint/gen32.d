@@ -200,7 +200,10 @@ if(isIntegral!T && isUnsigned!T) {
     
     foreach(i, ref v; lhs[0 .. rhs.length]) {
         t = v + rhs[i] + carry;
-        carry = (t < v) ? 1 : 0;
+        if (t == v && (rhs[i] || carry))
+            carry = 1;
+        else
+            carry = (t < v) ? 1 : 0;
         v = t;
     }
     
@@ -221,7 +224,11 @@ if(isIntegral!T && isUnsigned!T) {
     
     foreach(i, ref v; lhs[0 .. rhs.length]) {
         t = v + -rhs[i] - carry;
-        carry = (t > v) ? 1 : 0;
+        t = v - rhs[i] - carry;
+        if (t == v && (rhs[i] || carry))
+            carry = 1;
+        else
+            carry = (t > v) ? 1 : 0;
         v = t;
     }
     
@@ -293,6 +300,12 @@ unittest {
     lhs[] = [-1, -1, -1];
     assert(add(lhs, [1]) == [0, 0, 0]);
     assert(sub(lhs, [1]) == [-1, -1, -1]);
+    
+    //max value(s) subtraction and addition. the carry causes a zero (max+1) effect, requiring an override to the carry.
+    lhs[] = [-1, -1, 0];
+    rhs[] = [-1, -1, 0];
+    assert(add(lhs, rhs) == [-2, -1, 1]);
+    assert(sub(lhs, rhs) == [-1, -1, 0]);
 }
 
 //increase value by 1, handle carry if any
