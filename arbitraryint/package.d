@@ -6,7 +6,7 @@
  */
 module std.experimental.arbitraryint;
 
-import std.traits : isIntegral, isSigned, isUnsigned;
+import std.traits : isIntegral, isSigned, isUnsigned, MakeSigned=Signed, Unsigned;
 import std.format : FormatSpec;
 import std.experimental.arbitraryint.gen32;
 
@@ -150,10 +150,14 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      *    other = The other value, can be integral or an ArbitraryInt
      */
     auto opBinary(string op, T)(auto ref const(T) other) const {
+        //rhs promotion for division and modulus
         static if (isArbitraryInt!T && Size > T.Size && (op == "/" || op == "%")) {
-            //lhs promotion
-            return this.opBinary!op(ArbitraryInt!(Size*IntBits, T.IsSigned)(other));
-            assert(false); 
+            //automatic demotion for modulus.
+            static if (op == "%") {
+                return cast(ArbitraryInt!(T.Size*IntBits, IsSigned || T.IsSigned)) this.opBinary!op(ArbitraryInt!(Size*IntBits, T.IsSigned)(other));
+            } else {
+                return this.opBinary!op(ArbitraryInt!(Size*IntBits, T.IsSigned)(other));
+            }
         } else {
             static if (isArbitraryInt!T && Size < T.Size && (op == "+" || op == "-" || op == "*" || op == "&" || op == "|" || op == "^")) {
                 //lhs promotion
@@ -239,11 +243,30 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                         neg(result.val);
                 }
                 
-                return result;
+                //auto demotion of modulus
+                static if (op == "%") {
+                    /*note: only IsSigned need be checked as isSigned!T would carry over by default
+                      However for readability i'll leave both checks in as part of these tests.*/
+                    static if (IsSigned || isSigned!T) {
+                        return cast(MakeSigned!T) result;
+                    } else {
+                        return cast(T) result;
+                    }
+                } else {
+                    return result;
+                }
             } else static if (isIntegral!T) {
                 //convert and perform peration. As it's larger than Int/type internally we spuport
                 //it's easier to just forward it.
-                mixin ("return this "~op~" ArbitraryInt!(NumBits, isSigned!T)(cast(T) other);");
+                static if (op == "%") {
+                    static if (IsSigned || isSigned!T) {
+                        return cast(MakeSigned!T) this.opBinary!op(ArbitraryInt!(NumBits, isSigned!T)(cast(T) other));
+                    } else {
+                        return cast(T) this.opBinary!op(ArbitraryInt!(NumBits, isSigned!T)(cast(T) other));
+                    }
+                } else {
+                    return this.opBinary!op(ArbitraryInt!(NumBits, isSigned!T)(cast(T) other));
+                }
             } else static if (isArbitraryInt!T) {
                 static if (op == "+") {
                     add(result.val, other.val);
@@ -284,7 +307,15 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                         neg(result.val);
                 }
                 
-                return result;
+                static if (op == "%") {
+                    //the smaller of the two always makes sense here.
+                    import std.algorithm : min;
+                    return cast(ArbitraryInt!(min(Size, T.Size)*IntBits, IsSigned || T.IsSigned)) result;
+                } else static if (op == "/") {
+                    return cast(ArbitraryInt!(Size*IntBits, IsSigned || T.IsSigned)) result;
+                } else {
+                    return result;
+                }
             } else {
                 static assert(0, "Unknown type, cannot perform op " ~ op ~ " on " ~ T.stringof);
             }
@@ -297,10 +328,24 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      * Params:
      *    other = is a Integral type.
      */    
-    ArbitraryInt opBinaryRight(string op, T)(const(T) other) const
+    auto opBinaryRight(string op, T)(const(T) other) const
     if (isIntegral!T) {
         //reduced to forwarding and converting due to T could be too large a type to fit.
-        mixin("return ArbitraryInt(cast(T) other) "~op~" this;");
+        static if (op == ">>>") {
+            //has to be unsigned, otherwise upper gets in the way of the lower bits
+            return cast(T) (ArbitraryInt(cast(Unsigned!T) other).opBinary!(op)(this));
+        } else static if (op == "/" || op == "%" || op == ">>") {
+            /*auto demotion, only on small or reducable operators. LHS can't get bigger than it started.
+              should forcing signed be okay or retain original sign? Not sure...  uint / signed or uint % signed...*/
+            static if (IsSigned || isSigned!T) {
+                return cast(MakeSigned!T) (ArbitraryInt(cast(T) other).opBinary!(op)(this));
+            } else {
+                return cast(T) (ArbitraryInt(cast(T) other).opBinary!(op)(this));
+            }
+        } else {
+            return ArbitraryInt(cast(T) other).opBinary!op(this);
+        }
+        
     }
     
     /**
@@ -610,14 +655,14 @@ unittest {
     assert((Cent(100) - 50).toString == "50");
     assert((Cent(100) * 50).toString == "5000");
     assert((Cent(100) / 50).toString == "2");
-    assert((Cent(100) % 51).toString == "49");
+    assert((Cent(100) % 51) == 49);
 
     //check binary operator, large rhs
     assert((Cent(100) + 50L).toString == "150");
     assert((Cent(100) - 50L).toString == "50");
     assert((Cent(100) * 50L).toString == "5000");
-    assert((Cent(100) / 50L).toString == "2");
-    assert((Cent(100) % 51L).toString == "49");
+    assert((Cent(100) / 50L) == 2L);
+    assert((Cent(100) % 51L) == 49L);
     
     assert((Cent(100) << 2).toString == "400");
     assert((Cent(100) >> 2).toString == "25");
@@ -640,8 +685,8 @@ unittest {
     assert((100 + Cent(50)).toString == "150");
     assert((100 - Cent(50)).toString == "50");
     assert((100 * Cent(50)).toString == "5000");
-    assert((100 / Cent(50)).toString == "2");
-    assert((100 % Cent(51)).toString == "49");
+    assert((100 / Cent(50)) == 2);
+    assert((100 % Cent(51)) == 49);
     
     //mixed math
     assert((Cent(100) + UCent(50)).toString == "150");
@@ -661,22 +706,26 @@ unittest {
     assert((Cent(-100) % Cent(-51)).toString == "49");
 
     assert((Cent(100) / 50).toString == "2");
-    assert((Cent(100) % 51).toString == "49");
+    assert((Cent(100) % 51) == 49);
     assert((Cent(-100) / 50).toString == "-2");
-    assert((Cent(-100) % 51).toString == "-49");
-    assert((Cent(100) / -50L).toString == "-2");
-    assert((Cent(100) % -51L).toString == "-49");
-    assert((Cent(-100) / -50L).toString == "2");
-    assert((Cent(-100) % -51L).toString == "49");
+    assert((Cent(-100) % 51) == -49);
+    assert((Cent(100) / -50L) == -2L);
+    assert((Cent(100) % -51L) == -49L);
+    assert((Cent(-100) / -50L) == 2L);
+    assert((Cent(-100) % -51L) == 49L);
 
-    assert((100 / Cent(50)).toString == "2");
-    assert((100 % Cent(51)).toString == "49");
-    assert((-100 / Cent(50)).toString == "-2");
-    assert((-100 % Cent(51)).toString == "-49");
-    assert((100 / Cent(-50)).toString == "-2");
-    assert((100 % Cent(-51)).toString == "-49");
-    assert((-100 / Cent(-50)).toString == "2");
-    assert((-100 % Cent(-51)).toString == "49");
+    //isIntegral but too large for uint
+    assert((UCent(-1) / 0x555555555UL).toString == "14855280471640736080906420224");
+    assert((UCent(-1) % 0x555555555UL) == 0xFFFFF);
+    
+    assert((100 / Cent(50)) == 2);
+    assert((100 % Cent(51)) == 49);
+    assert((-100 / Cent(50)) == -2);
+    assert((-100 % Cent(51)) == -49);
+    assert((100 / Cent(-50)) == -2);
+    assert((100 % Cent(-51)) == -49);
+    assert((-100 / Cent(-50)) == 2);
+    assert((-100 % Cent(-51)) == 49);
     
     //signed multiply
     assert((Cent(-100) * Cent(50)).toString == "-5000");
@@ -726,6 +775,7 @@ unittest {
     //verify larger/smaller ArbitraryInts work, basic math
     //a bigger worry was division and multiplication
     alias DCent = ArbitraryInt!(256, true);
+    alias DUCent = ArbitraryInt!(256, false);
     assert((Cent(100) + DCent(50)).toString == "150");
     assert((Cent(100) - DCent(50)).toString == "50");
     assert((Cent(100) * DCent(50)).toString == "5000");
@@ -839,4 +889,33 @@ unittest {
     assert(ctfe_rsh == Cent(-0x123456789abcdefL) >> 4);
     assert(ctfe_rsh2 == Cent(-0x123456789abcdefL) >>> 4);
     assert(ctfe_pow == Cent(3) ^^ 80);
+    
+    //autodemotion (opBinaryRight)
+    assert(is(typeof(int.init / Cent.init) == int));
+    assert(is(typeof(int.init % Cent.init) == int));
+    assert(is(typeof(int.init >> Cent.init) == int));
+    assert(is(typeof(int.init >>> Cent.init) == int));
+    assert(is(typeof(uint.init / UCent.init) == uint));
+    
+    //auto promotion
+    assert(is(typeof(Cent.init + DCent.init) == DCent));
+    assert(is(typeof(Cent.init - DCent.init) == DCent));
+    assert(is(typeof(Cent.init & DCent.init) == DCent));
+    assert(is(typeof(Cent.init | DCent.init) == DCent));
+    assert(is(typeof(Cent.init ^ DCent.init) == DCent));
+
+    //automatic promition & demotion (div & modulus)
+    assert(is(typeof(Cent.init / DCent.init) == Cent));
+    assert(is(typeof(DCent.init / Cent.init) == DCent));
+    assert(is(typeof(Cent.init % DCent.init) == Cent));
+    assert(is(typeof(DCent.init % Cent.init) == Cent));
+
+    //check unsigned auto promotion (only one needed
+    assert(is(typeof(UCent.init + DUCent.init) == DUCent));
+    //unsigned auto demotion
+    assert(is(typeof(UCent.init % DUCent.init) == UCent));
+    assert(is(typeof(DUCent.init % UCent.init) == UCent));
+    
+    //misc combinations
+    assert(is(typeof(UCent.init % 10u) == uint));
 }
