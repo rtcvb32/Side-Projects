@@ -150,8 +150,18 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
      * Params:
      *    other = The other value, can be integral or an ArbitraryInt
      */
-    ArbitraryInt opBinary(string op, T)(auto ref const(T) other) const {
-        ArbitraryInt result = this;
+    auto opBinary(string op, T)(auto ref const(T) other) const {
+        static if (isArbitraryInt!T && Size > T.Size && (op == "/" || op == "%")) {
+            //lhs promotion
+            return this.opBinary!op(ArbitraryInt!(Size*IntBits, T.IsSigned)(other));
+            assert(false); 
+        }
+        static if (isArbitraryInt!T && Size < T.Size && (op == "+" || op == "-" || op == "*" || op == "&" || op == "|" || op == "^")) {
+            //lhs promotion
+            auto result = ArbitraryInt!(T.Size*IntBits, IsSigned || T.IsSigned)(this);
+        } else {
+            ArbitraryInt result = this;
+        }
         
         static if ((IsSigned || (isArbitraryInt!T && T.IsSigned) || (isIntegral!T && isSigned!T))   //lhs or rhs is signed
                 && (isArbitraryInt!T || isSmallIntegral!T)                                          //where rhs isn't going to be upgraded
@@ -241,9 +251,9 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
             } else static if (op == "-") {
                 sub(result.val, other.val);
             } else static if (op == "*") {
-                Int[Size+T.Size] m_tmp = void;
+                Int[result.Size+T.Size] m_tmp = void;
                 mul(m_tmp, lhs, rhs);
-                result.val[] = m_tmp[0 .. Size];
+                result.val[] = m_tmp[0 .. result.Size];
             } else static if (op == "/" || op == "%") {
                 import std.algorithm : max;
                 enum SIZE = max(Size, T.Size);
