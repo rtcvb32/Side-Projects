@@ -256,7 +256,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                     return result;
                 }
             } else static if (isIntegral!T) {
-                //convert and perform peration. As it's larger than Int/type internally we spuport
+                //convert and perform peration. As it's larger than Int/type internally we support
                 //it's easier to just forward it.
                 static if (op == "%") {
                     static if (IsSigned || isSigned!T) {
@@ -295,7 +295,7 @@ struct ArbitraryInt(size_t NumBits, bool Signed) {
                 } else static if (op == ">>>" || op == ">>" || op == "<<" || op == "^^") {
                     //none of these make sense as a larger int type, so forward to the other half.
                     assert(cmp(other.val[1 .. $], null) == 0, "Value too large for type "~Int.stringof~" or is negative");
-                    mixin("result = this.opBinary!(op, Int)(other.val[0]);");
+                    result = this.opBinary!(op, Int)(other.val[0]);
                 } else {
                     static assert(false, "Operation "~op~" Not implimented");
                 }
@@ -619,6 +619,10 @@ unittest {
     
     c = Cent("0x688589C_C0E9505E_2F2fee55_80000000");          //fact33
     assert(c.toString == "8683317618811886495518194401280000000");
+    
+    //test signed assignment from another ArbitraryInt
+    c = Cent(ArbitraryInt!(64, true)(-1));
+    assert(c.toString == "-1");
     
     c = Cent(-100);
     assert(c.toString == "-100");
